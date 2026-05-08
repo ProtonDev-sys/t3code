@@ -163,6 +163,8 @@ const buildEntry = <R>(input: {
         accentColor: entry.accentColor,
         environment: entry.environment ?? [],
         enabled: entry.enabled ?? decodedConfigEnabled(typedConfig) ?? true,
+        mcpEnabled: entry.mcpEnabled ?? true,
+        customAgents: entry.customAgents ?? [],
         config: typedConfig,
       })
       .pipe(Effect.provideService(Scope.Scope, childScope), Effect.result);

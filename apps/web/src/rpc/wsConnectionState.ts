@@ -107,7 +107,7 @@ export function recordWsConnectionAttempt(
     attemptCount: current.attemptCount + 1,
     connectionLabel: connectionLabel ?? current.connectionLabel,
     nextRetryAt: null,
-    phase: "connecting",
+    phase: current.phase === "connected" ? "connected" : "connecting",
     reconnectAttemptCount: current.phase === "connected" ? 1 : current.reconnectAttemptCount + 1,
     reconnectPhase: "attempting",
     socketUrl,

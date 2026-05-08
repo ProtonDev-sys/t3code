@@ -127,6 +127,43 @@ export interface WsRpcClient {
     readonly discoverSourceControl: RpcUnaryNoArgMethod<
       typeof WS_METHODS.serverDiscoverSourceControl
     >;
+    readonly codexMcp: {
+      readonly list: (
+        input?: RpcInput<typeof WS_METHODS.serverCodexMcpList>,
+      ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverCodexMcpList>>;
+      readonly add: RpcUnaryMethod<typeof WS_METHODS.serverCodexMcpAdd>;
+      readonly update: RpcUnaryMethod<typeof WS_METHODS.serverCodexMcpUpdate>;
+      readonly delete: RpcUnaryMethod<typeof WS_METHODS.serverCodexMcpDelete>;
+    };
+    readonly codexAgents: {
+      readonly list: (
+        input?: RpcInput<typeof WS_METHODS.serverCodexAgentsList>,
+      ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverCodexAgentsList>>;
+    };
+    readonly codexPlugins: {
+      readonly list: (
+        input?: RpcInput<typeof WS_METHODS.serverCodexPluginsList>,
+      ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverCodexPluginsList>>;
+      readonly install: RpcUnaryMethod<typeof WS_METHODS.serverCodexPluginsInstall>;
+      readonly update: RpcUnaryMethod<typeof WS_METHODS.serverCodexPluginsUpdate>;
+    };
+    readonly codexAutomations: {
+      readonly list: (
+        input?: RpcInput<typeof WS_METHODS.serverCodexAutomationsList>,
+      ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverCodexAutomationsList>>;
+      readonly save: RpcUnaryMethod<typeof WS_METHODS.serverCodexAutomationsSave>;
+      readonly delete: RpcUnaryMethod<typeof WS_METHODS.serverCodexAutomationsDelete>;
+      readonly update: RpcUnaryMethod<typeof WS_METHODS.serverCodexAutomationsUpdate>;
+    };
+    readonly codexUsageHistory: {
+      readonly list: (
+        input?: RpcInput<typeof WS_METHODS.serverCodexUsageHistoryList>,
+      ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverCodexUsageHistoryList>>;
+    };
+    readonly cliUpdates: {
+      readonly startCodex: RpcUnaryMethod<typeof WS_METHODS.serverCliUpdatesStartCodex>;
+      readonly subscribe: RpcStreamMethod<typeof WS_METHODS.subscribeCliUpdates>;
+    };
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
@@ -241,6 +278,52 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverUpdateSettings]({ patch })),
       discoverSourceControl: () =>
         transport.request((client) => client[WS_METHODS.serverDiscoverSourceControl]({})),
+      codexMcp: {
+        list: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexMcpList](input ?? {})),
+        add: (input) => transport.request((client) => client[WS_METHODS.serverCodexMcpAdd](input)),
+        update: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexMcpUpdate](input)),
+        delete: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexMcpDelete](input)),
+      },
+      codexAgents: {
+        list: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexAgentsList](input ?? {})),
+      },
+      codexPlugins: {
+        list: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexPluginsList](input ?? {})),
+        install: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexPluginsInstall](input)),
+        update: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexPluginsUpdate](input)),
+      },
+      codexAutomations: {
+        list: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexAutomationsList](input ?? {})),
+        save: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexAutomationsSave](input)),
+        delete: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexAutomationsDelete](input)),
+        update: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCodexAutomationsUpdate](input)),
+      },
+      codexUsageHistory: {
+        list: (input) =>
+          transport.request((client) =>
+            client[WS_METHODS.serverCodexUsageHistoryList](input ?? {}),
+          ),
+      },
+      cliUpdates: {
+        startCodex: (input) =>
+          transport.request((client) => client[WS_METHODS.serverCliUpdatesStartCodex](input)),
+        subscribe: (listener, options) =>
+          transport.subscribe((client) => client[WS_METHODS.subscribeCliUpdates]({}), listener, {
+            ...options,
+            tag: WS_METHODS.subscribeCliUpdates,
+          }),
+      },
       subscribeConfig: (listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.subscribeServerConfig]({}), listener, {
           ...options,

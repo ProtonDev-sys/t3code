@@ -29,6 +29,13 @@ describe("brand-assets", () => {
     ]);
   });
 
+  it("maps nightly web assets to nightly icons", () => {
+    expect(resolveWebIconOverrides("nightly", "dist/client")).toContainEqual({
+      sourceRelativePath: BRAND_ASSET_PATHS.nightlyWebFaviconIco,
+      targetRelativePath: "dist/client/favicon.ico",
+    });
+  });
+
   it("maps server build web assets to development icons", () => {
     expect(DEVELOPMENT_ICON_OVERRIDES[0]).toEqual({
       sourceRelativePath: BRAND_ASSET_PATHS.developmentWebFaviconIco,

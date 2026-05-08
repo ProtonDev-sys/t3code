@@ -289,6 +289,15 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(testWindow.location.searchParams.get("token")).toBeNull();
   });
 
+  it("preserves the route when stripping a pairing token from a route hash", async () => {
+    const testWindow = installTestBrowser("http://localhost/#/?token=pairing-token");
+    const { takePairingTokenFromUrl } = await import("./environments/primary");
+
+    expect(takePairingTokenFromUrl()).toBe("pairing-token");
+    expect(testWindow.location.hash).toBe("#/");
+    expect(testWindow.location.searchParams.get("token")).toBeNull();
+  });
+
   it("accepts query-string pairing tokens as a backward-compatible fallback", async () => {
     const testWindow = installTestBrowser("http://localhost/?token=pairing-token");
     const { takePairingTokenFromUrl } = await import("./environments/primary");

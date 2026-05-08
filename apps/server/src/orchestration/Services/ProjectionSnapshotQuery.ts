@@ -36,6 +36,13 @@ export interface ProjectionThreadCheckpointContext {
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
 }
 
+export interface ProjectionThreadDetailReadOptions {
+  readonly messageLimit?: number;
+  readonly proposedPlanLimit?: number;
+  readonly activityLimit?: number;
+  readonly checkpointLimit?: number;
+}
+
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
@@ -63,6 +70,11 @@ export interface ProjectionSnapshotQueryShape {
    * Read aggregate projection counts without hydrating the full read model.
    */
   readonly getCounts: () => Effect.Effect<ProjectionSnapshotCounts, ProjectionRepositoryError>;
+
+  /**
+   * Read the latest projection sequence without hydrating projects or threads.
+   */
+  readonly getSnapshotSequence: () => Effect.Effect<number, ProjectionRepositoryError>;
 
   /**
    * Read the active project for an exact workspace root match.
@@ -104,6 +116,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
+    options?: ProjectionThreadDetailReadOptions,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 }
 

@@ -20,6 +20,17 @@ const mergeProviderModels = (
   return [...fallbackModels, ...cachedModels.filter((model) => !fallbackSlugs.has(model.slug))];
 };
 
+const mergeProviderSlashCommands = (
+  fallbackCommands: ReadonlyArray<ServerProvider["slashCommands"][number]>,
+  cachedCommands: ReadonlyArray<ServerProvider["slashCommands"][number]>,
+): ReadonlyArray<ServerProvider["slashCommands"][number]> => {
+  const fallbackNames = new Set(fallbackCommands.map((command) => command.name.toLowerCase()));
+  return [
+    ...fallbackCommands,
+    ...cachedCommands.filter((command) => !fallbackNames.has(command.name.toLowerCase())),
+  ];
+};
+
 export const orderProviderSnapshots = (
   providers: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ServerProvider> =>
@@ -61,7 +72,10 @@ export const hydrateCachedProvider = (input: {
     status: input.cachedProvider.status,
     auth: input.cachedProvider.auth,
     checkedAt: input.cachedProvider.checkedAt,
-    slashCommands: input.cachedProvider.slashCommands,
+    slashCommands: mergeProviderSlashCommands(
+      input.fallbackProvider.slashCommands,
+      input.cachedProvider.slashCommands,
+    ),
     skills: input.cachedProvider.skills,
   };
 

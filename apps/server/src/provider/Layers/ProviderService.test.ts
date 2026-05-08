@@ -12,12 +12,14 @@ import type {
 import {
   ApprovalRequestId,
   EventId,
+  ProviderCustomAgentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { customAgentOptionValue, PROVIDER_AGENT_OPTION_ID } from "@t3tools/shared/customAgents";
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
@@ -362,6 +364,8 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
               driverKind: CLAUDE_AGENT_DRIVER,
               displayName: undefined,
               enabled: false,
+              mcpEnabled: true,
+              customAgents: [],
               continuationIdentity: {
                 driverKind: CLAUDE_AGENT_DRIVER,
                 continuationKey: "claudeAgent:instance:claudeAgent",
@@ -423,6 +427,8 @@ it.effect(
                 driverKind,
                 displayName: "Codex Personal",
                 enabled: true,
+                mcpEnabled: true,
+                customAgents: [],
                 continuationIdentity: {
                   driverKind,
                   continuationKey: "codex:/Users/example/.codex",
@@ -494,6 +500,8 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
               driverKind,
               displayName: "Codex Personal",
               enabled: false,
+              mcpEnabled: true,
+              customAgents: [],
               continuationIdentity: {
                 driverKind,
                 continuationKey: "codex:/Users/example/.codex",
@@ -539,6 +547,150 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 );
 
 const routing = makeProviderServiceLayer();
+
+it.effect("ProviderServiceLive asks Codex to use the materialized native custom agent", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const registryBase = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const registry: ProviderAdapterRegistryShape = {
+      ...registryBase,
+      getInstanceInfo: (instanceId) =>
+        registryBase.getInstanceInfo(instanceId).pipe(
+          Effect.map((info) =>
+            instanceId === codexInstanceId
+              ? {
+                  ...info,
+                  customAgents: [
+                    {
+                      id: ProviderCustomAgentId.make("reviewer"),
+                      name: "Reviewer",
+                      description: "Checks correctness and regressions",
+                      instructions: "Review for bugs and missing tests.",
+                      enabled: true,
+                    },
+                  ],
+                }
+              : info,
+          ),
+        ),
+    };
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+    const threadId = asThreadId("thread-custom-agent");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "Review this change.",
+        modelSelection: createModelSelection(codexInstanceId, "gpt-5.5", [
+          {
+            id: PROVIDER_AGENT_OPTION_ID,
+            value: customAgentOptionValue("reviewer"),
+          },
+        ]),
+      });
+    }).pipe(Effect.provide(providerLayer));
+
+    const forwardedInput = codex.sendTurn.mock.calls[0]?.[0];
+    assert.include(
+      forwardedInput?.input ?? "",
+      'Use the Codex custom agent named "Reviewer" from reviewer.toml for this task.',
+    );
+    assert.notInclude(forwardedInput?.input ?? "", "Review for bugs and missing tests.");
+    assert.include(forwardedInput?.input ?? "", "User request:\nReview this change.");
+    assert.deepEqual(forwardedInput?.modelSelection, {
+      instanceId: codexInstanceId,
+      model: "gpt-5.5",
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive does not wrap Codex slash commands with custom-agent prompts", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const registryBase = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const registry: ProviderAdapterRegistryShape = {
+      ...registryBase,
+      getInstanceInfo: (instanceId) =>
+        registryBase.getInstanceInfo(instanceId).pipe(
+          Effect.map((info) =>
+            instanceId === codexInstanceId
+              ? {
+                  ...info,
+                  customAgents: [
+                    {
+                      id: ProviderCustomAgentId.make("reviewer"),
+                      name: "Reviewer",
+                      instructions: "Review for bugs and missing tests.",
+                      enabled: true,
+                    },
+                  ],
+                }
+              : info,
+          ),
+        ),
+    };
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+    const threadId = asThreadId("thread-custom-agent-slash-command");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "/compact",
+        modelSelection: createModelSelection(codexInstanceId, "gpt-5.5", [
+          {
+            id: PROVIDER_AGENT_OPTION_ID,
+            value: customAgentOptionValue("reviewer"),
+          },
+        ]),
+      });
+    }).pipe(Effect.provide(providerLayer));
+
+    const forwardedInput = codex.sendTurn.mock.calls[0]?.[0];
+    assert.equal(forwardedInput?.input, "/compact");
+    assert.deepEqual(forwardedInput?.modelSelection, {
+      instanceId: codexInstanceId,
+      model: "gpt-5.5",
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect("ProviderServiceLive writes canonical events to the emitting thread segment", () =>
   Effect.gen(function* () {

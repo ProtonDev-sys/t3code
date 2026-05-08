@@ -7,12 +7,11 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
 
+import { SettingsCenterNav } from "../components/settings/SettingsSidebarNav";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { Button } from "../components/ui/button";
-import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
-import { isElectron } from "../env";
 
 function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
@@ -35,7 +34,13 @@ function SettingsContentLayout() {
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const showRestoreDefaults = location.pathname === "/settings/general";
+  const showRestoreDefaults =
+    location.pathname === "/settings/general" ||
+    location.pathname === "/settings/providers" ||
+    location.pathname === "/settings/agents" ||
+    location.pathname === "/settings/mcp" ||
+    location.pathname === "/settings/advanced" ||
+    location.pathname === "/settings/about";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
@@ -44,6 +49,13 @@ function SettingsContentLayout() {
     }
     void navigate({ to: "/" });
   }, [canGoBack, navigate]);
+  const handleBackdropMouseDown = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      navigateBackWithinApp();
+    },
+    [navigateBackWithinApp],
+  );
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -61,40 +73,41 @@ function SettingsContentLayout() {
   }, [navigateBackWithinApp]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        {!isElectron && (
-          <header className="border-b border-border px-3 py-2 sm:px-5">
-            <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
-              <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-              <span className="text-sm font-medium text-foreground">Settings</span>
-              {showRestoreDefaults ? (
-                <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButton onRestored={handleRestored} />
-                </div>
-              ) : null}
-            </div>
-          </header>
-        )}
-
-        {isElectron && (
-          <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
-              Settings
-            </span>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 p-2 text-foreground backdrop-blur-[2px] sm:p-4"
+      onMouseDown={handleBackdropMouseDown}
+    >
+      <div
+        className="flex h-[min(760px,calc(100dvh-1rem))] w-[min(1040px,calc(100vw-1rem))] min-w-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background/95 shadow-2xl sm:h-[min(760px,calc(100dvh-2rem))] sm:w-[min(1040px,calc(100vw-2rem))]"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="shrink-0 border-b border-border px-3 py-2 sm:px-5">
+          <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
+            <span className="text-sm font-medium text-foreground">Settings</span>
             {showRestoreDefaults ? (
               <div className="ms-auto flex items-center gap-2">
                 <RestoreDefaultsButton onRestored={handleRestored} />
               </div>
             ) : null}
           </div>
-        )}
+        </header>
 
-        <div key={restoreSignal} className="min-h-0 flex flex-1 flex-col">
-          <Outlet />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="grid h-full w-full grid-cols-1 gap-3 p-3 md:grid-cols-[13rem_minmax(0,1fr)] md:gap-4 md:p-4">
+            <SettingsCenterNav
+              pathname={location.pathname}
+              className="max-h-64 md:max-h-none md:h-full"
+            />
+            <div key={restoreSignal} className="min-h-0 min-w-0 flex flex-col overflow-hidden">
+              <Outlet />
+            </div>
+          </div>
         </div>
       </div>
-    </SidebarInset>
+    </div>
   );
 }
 

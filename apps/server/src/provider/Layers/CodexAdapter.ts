@@ -23,6 +23,8 @@ import {
   ProviderApprovalDecision,
   ThreadId,
   ProviderSendTurnInput,
+  type ProviderSteerTurnInput,
+  RuntimeTaskId,
 } from "@t3tools/contracts";
 import { Effect, Exit, Fiber, FileSystem, Queue, Schema, Scope, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -51,11 +53,53 @@ import {
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeReviewInput,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
+import { parseCodexProviderSlashCommand } from "./CodexSlashCommands.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = ProviderDriverKind.make("codex");
+const CODEX_INIT_PROMPT = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed - add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+
+Project Structure & Module Organization
+
+- Outline the project structure, including where the source code, tests, and assets are located.
+
+Build, Test, and Development Commands
+
+- List key commands for building, testing, and running locally (e.g. npm test, make build).
+- Briefly explain what each command does.
+
+Coding Style & Naming Conventions
+
+- Specify indentation rules, language-specific style preferences, and naming patterns.
+- Include any formatting or linting tools used.
+
+Testing Guidelines
+
+- Identify testing frameworks and coverage requirements.
+- State test naming conventions and how to run tests.
+
+Commit & Pull Request Guidelines
+
+- Summarize commit message conventions found in the project's Git history.
+- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
+
+(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions.`;
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -69,6 +113,7 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly mcpEnabled?: boolean;
 }
 
 interface CodexAdapterSessionContext {
@@ -135,6 +180,14 @@ function trimText(value: string | undefined | null): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readPayloadModel(payload: ProviderEvent["payload"]): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const model = (payload as Record<string, unknown>).model;
+  return typeof model === "string" ? trimText(model) : undefined;
+}
+
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
 
 function isFatalCodexProcessStderrMessage(message: string): boolean {
@@ -178,18 +231,56 @@ function normalizeCodexTokenUsage(
   };
 }
 
-function toTurnStatus(
-  value: EffectCodexSchema.V2TurnCompletedNotification["turn"]["status"] | "cancelled",
-): "completed" | "failed" | "cancelled" | "interrupted" {
+function toTurnStatus(value: unknown): "completed" | "failed" | "cancelled" | "interrupted" {
   switch (value) {
     case "completed":
     case "failed":
-    case "cancelled":
     case "interrupted":
       return value;
+    case "cancelled":
+    case "canceled":
+      return "cancelled";
     default:
       return "completed";
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readCodexTurnCompletedPayload(payload: ProviderEvent["payload"]): {
+  readonly status: "completed" | "failed" | "cancelled" | "interrupted";
+  readonly errorMessage?: string;
+} {
+  const decoded = readPayload(EffectCodexSchema.V2TurnCompletedNotification, payload);
+  if (decoded) {
+    const errorMessage = trimText(decoded.turn.error?.message);
+    return {
+      status: toTurnStatus(decoded.turn.status),
+      ...(errorMessage ? { errorMessage } : {}),
+    };
+  }
+
+  const root = objectRecord(payload);
+  const turn = objectRecord(root?.turn);
+  const error = objectRecord(turn?.error ?? root?.error);
+  const errorMessage = trimText(
+    typeof error?.message === "string"
+      ? error.message
+      : typeof root?.errorMessage === "string"
+        ? root.errorMessage
+        : typeof root?.message === "string"
+          ? root.message
+          : undefined,
+  );
+
+  return {
+    status: toTurnStatus(turn?.status ?? root?.status),
+    ...(errorMessage ? { errorMessage } : {}),
+  };
 }
 
 function normalizeItemType(raw: string | undefined | null): string {
@@ -639,6 +730,32 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (
+    event.method === "thread/goal/get" ||
+    event.method === "thread/goal/set" ||
+    event.method === "thread/goal/clear"
+  ) {
+    const message = event.message ?? "Codex goal updated";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "task.progress",
+        payload: {
+          taskId: RuntimeTaskId.make("codex-goal"),
+          description: message,
+        },
+      },
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "content.delta",
+        payload: {
+          streamKind: "assistant_text",
+          delta: `${message}\n`,
+        },
+      },
+    ];
+  }
+
   if (event.method === "thread/started") {
     const payload = readPayload(EffectCodexSchema.V2ThreadStartedNotification, event.payload);
     if (!payload) {
@@ -735,29 +852,26 @@ function mapToRuntimeEvents(
     if (!turnId) {
       return [];
     }
+    const model = readPayloadModel(event.payload);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         turnId,
         type: "turn.started",
-        payload: {},
+        payload: model ? { model } : {},
       },
     ];
   }
 
   if (event.method === "turn/completed") {
-    const payload = readPayload(EffectCodexSchema.V2TurnCompletedNotification, event.payload);
-    if (!payload) {
-      return [];
-    }
-    const errorMessage = trimText(payload.turn.error?.message);
+    const completion = readCodexTurnCompletedPayload(event.payload);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "turn.completed",
         payload: {
-          state: toTurnStatus(payload.turn.status),
-          ...(errorMessage ? { errorMessage } : {}),
+          state: completion.status,
+          ...(completion.errorMessage ? { errorMessage: completion.errorMessage } : {}),
         },
       },
     ];
@@ -1103,7 +1217,24 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "account/rateLimits/updated") {
-    if (!readPayload(EffectCodexSchema.V2AccountRateLimitsUpdatedNotification, event.payload)) {
+    const notificationPayload = readPayload(
+      EffectCodexSchema.V2AccountRateLimitsUpdatedNotification,
+      event.payload,
+    );
+    const readPayloadValue = readPayload(
+      EffectCodexSchema.V2GetAccountRateLimitsResponse,
+      event.payload,
+    );
+    const rateLimitsPayload =
+      readPayloadValue !== undefined
+        ? {
+            ...readPayloadValue.rateLimits,
+            ...(readPayloadValue.rateLimitsByLimitId !== undefined
+              ? { rateLimitsByLimitId: readPayloadValue.rateLimitsByLimitId }
+              : {}),
+          }
+        : notificationPayload?.rateLimits;
+    if (!rateLimitsPayload) {
       return [];
     }
     return [
@@ -1111,7 +1242,7 @@ function mapToRuntimeEvents(
         type: "account.rate-limits.updated",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          rateLimits: event.payload ?? {},
+          rateLimits: rateLimitsPayload,
         },
       },
     ];
@@ -1373,6 +1504,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
           ...(options?.environment ? { environment: options.environment } : {}),
+          mcpEnabled: options?.mcpEnabled ?? true,
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(Schema.is(CodexResumeCursorSchema)(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
@@ -1456,8 +1588,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
-    attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
+    input: Pick<ProviderSendTurnInput | ProviderSteerTurnInput, "threadId">,
+    attachment: NonNullable<
+      (ProviderSendTurnInput | ProviderSteerTurnInput)["attachments"]
+    >[number],
+    method: "turn/start" | "turn/steer",
   ) {
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: serverConfig.attachmentsDir,
@@ -1466,7 +1601,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (!attachmentPath) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
-        method: "turn/start",
+        method,
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
     }
@@ -1475,7 +1610,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
-            method: "turn/start",
+            method,
             detail: `Failed to read attachment file: ${cause.message}.`,
             cause,
           }),
@@ -1488,13 +1623,65 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   });
 
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    const providerSlashCommand = parseCodexProviderSlashCommand(input.input);
+    const session = yield* requireSession(input.threadId);
+    if (providerSlashCommand?.command === "compact") {
+      return yield* session.runtime
+        .compactThread()
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.threadId, "thread/compact/start", cause),
+          ),
+        );
+    }
+    if (providerSlashCommand?.command === "review") {
+      const reviewInput: CodexSessionRuntimeReviewInput = providerSlashCommand.args
+        ? { instructions: providerSlashCommand.args }
+        : {};
+      return yield* session.runtime
+        .startReview(reviewInput)
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "review/start", cause)),
+        );
+    }
+    if (providerSlashCommand?.command === "rename") {
+      if (!providerSlashCommand.args) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/name/set",
+          detail: "Usage: /rename <thread name>",
+        });
+      }
+      return yield* session.runtime
+        .renameThread({ name: providerSlashCommand.args })
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.threadId, "thread/name/set", cause),
+          ),
+        );
+    }
+    if (providerSlashCommand?.command === "goal") {
+      return yield* session.runtime
+        .runGoalCommand({ args: providerSlashCommand.args })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "thread/goal", cause)),
+        );
+    }
+    if (providerSlashCommand && providerSlashCommand.command !== "init") {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "provider/slash-command",
+        detail: `/${providerSlashCommand.command} is a Codex interface command. T3 Code recognizes it and will not send it as a prompt, but this command is not yet available from the provider turn path.`,
+      });
+    }
+
     const codexAttachments = yield* Effect.forEach(
       input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
+      (attachment) => resolveAttachment(input, attachment, "turn/start"),
       { concurrency: 1 },
     );
 
-    const session = yield* requireSession(input.threadId);
+    const promptInput = providerSlashCommand?.command === "init" ? CODEX_INIT_PROMPT : input.input;
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -1505,7 +1692,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         : undefined;
     return yield* session.runtime
       .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
+        ...(promptInput !== undefined ? { input: promptInput } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
           : {}),
@@ -1520,6 +1707,36 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
   });
+
+  const steerTurn: NonNullable<CodexAdapterShape["steerTurn"]> = Effect.fn("steerTurn")(
+    function* (input) {
+      const providerSlashCommand = parseCodexProviderSlashCommand(input.input);
+      const session = yield* requireSession(input.threadId);
+      if (providerSlashCommand) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/steer",
+          detail: `/${providerSlashCommand.command} cannot be steered into an active Codex turn.`,
+        });
+      }
+
+      const codexAttachments = yield* Effect.forEach(
+        input.attachments ?? [],
+        (attachment) => resolveAttachment(input, attachment, "turn/steer"),
+        { concurrency: 1 },
+      );
+
+      return yield* session.runtime
+        .steerTurn({
+          turnId: input.turnId,
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)),
+        );
+    },
+  );
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);
@@ -1665,6 +1882,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     },
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     readThread,
     rollbackThread,

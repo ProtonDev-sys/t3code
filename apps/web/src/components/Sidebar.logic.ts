@@ -8,7 +8,7 @@ import {
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
-import { isLatestTurnSettled } from "../session-logic";
+import { isLatestTurnSettled, isSessionActivelyRunning } from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -349,7 +349,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (isSessionActivelyRunning(thread.latestTurn, thread.session)) {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
@@ -411,9 +411,10 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
-export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
+export function getVisibleThreadsForProject<TId, T extends { id: TId }>(input: {
   threads: readonly T[];
-  activeThreadId: T["id"] | undefined;
+  activeThreadId: TId | undefined;
+  promotedThreadId?: TId | undefined;
   isThreadListExpanded: boolean;
   previewLimit: number;
 }): {
@@ -421,8 +422,36 @@ export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input:
   visibleThreads: T[];
   hiddenThreads: T[];
 } {
-  const { activeThreadId, isThreadListExpanded, previewLimit, threads } = input;
+  const { activeThreadId, isThreadListExpanded, previewLimit, promotedThreadId, threads } = input;
   const hasHiddenThreads = threads.length > previewLimit;
+  const promotedThread =
+    promotedThreadId === undefined
+      ? null
+      : (threads.find((thread) => thread.id === promotedThreadId) ?? null);
+
+  if (promotedThread) {
+    const threadsWithoutPromotion = threads.filter((thread) => thread.id !== promotedThread.id);
+    if (!hasHiddenThreads || isThreadListExpanded) {
+      return {
+        hasHiddenThreads,
+        hiddenThreads: [],
+        visibleThreads: [promotedThread, ...threadsWithoutPromotion],
+      };
+    }
+
+    const previewThreads = threads.slice(0, previewLimit);
+    const visibleThreads = [
+      promotedThread,
+      ...previewThreads.filter((thread) => thread.id !== promotedThread.id),
+    ];
+    const visibleThreadIds = new Set(visibleThreads.map((thread) => thread.id));
+
+    return {
+      hasHiddenThreads: true,
+      hiddenThreads: threads.filter((thread) => !visibleThreadIds.has(thread.id)),
+      visibleThreads,
+    };
+  }
 
   if (!hasHiddenThreads || isThreadListExpanded) {
     return {

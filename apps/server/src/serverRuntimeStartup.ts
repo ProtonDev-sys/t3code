@@ -25,7 +25,10 @@ import {
 import { ServerConfig } from "./config.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open } from "./open.ts";
-import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
@@ -33,7 +36,10 @@ import { ServerSettingsService } from "./serverSettings.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
-import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
+import {
+  ProviderSessionReaper,
+  type ProviderSessionReaperShape,
+} from "./provider/Services/ProviderSessionReaper.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -279,9 +285,34 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
     Effect.withSpan(`server.startup.${phase}`),
   );
 
+const schedulePostReadyBackgroundWork = (input: {
+  readonly orchestrationEngine: OrchestrationEngineShape;
+  readonly providerSessionReaper: ProviderSessionReaperShape;
+  readonly reactorScope: Scope.Closeable;
+}) =>
+  Effect.gen(function* () {
+    yield* runStartupPhase(
+      "engine.background-warmup",
+      Effect.sleep("5 seconds").pipe(
+        Effect.andThen(input.orchestrationEngine.getReadModel()),
+        Effect.ignoreCause({ log: true }),
+        Effect.forkScoped,
+      ),
+    );
+    yield* runStartupPhase(
+      "provider-session-reaper.start",
+      Effect.sleep("10 seconds").pipe(
+        Effect.andThen(input.providerSessionReaper.start().pipe(Scope.provide(input.reactorScope))),
+        Effect.ignoreCause({ log: true }),
+        Effect.forkScoped,
+      ),
+    );
+  });
+
 export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const keybindings = yield* Keybindings;
+  const orchestrationEngine = yield* OrchestrationEngineService;
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper;
   const lifecycleEvents = yield* ServerLifecycleEvents;
@@ -330,7 +361,6 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
       "reactors.start",
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
-        yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );
 
@@ -431,6 +461,12 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
 
       yield* Effect.logDebug("startup phase: recording startup heartbeat");
       yield* launchStartupHeartbeat;
+      yield* Effect.logDebug("startup phase: scheduling post-ready background work");
+      yield* schedulePostReadyBackgroundWork({
+        orchestrationEngine,
+        providerSessionReaper,
+        reactorScope,
+      });
       if (serverConfig.startupPresentation === "headless") {
         yield* Effect.logDebug("startup phase: headless access info");
         const accessInfo = yield* issueHeadlessServeAccessInfo();

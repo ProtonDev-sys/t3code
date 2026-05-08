@@ -227,7 +227,8 @@ function isTransientBootstrapError(error: unknown): boolean {
 }
 
 async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
-  const bootstrapCredential = getDesktopBootstrapCredential();
+  const urlBootstrapCredential = peekPairingTokenFromUrl();
+  const bootstrapCredential = getDesktopBootstrapCredential() ?? urlBootstrapCredential;
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated) {
     return { status: "authenticated" };
@@ -242,6 +243,9 @@ async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
 
   try {
     await exchangeBootstrapCredential(bootstrapCredential);
+    if (urlBootstrapCredential) {
+      stripPairingTokenFromUrl();
+    }
     await waitForAuthenticatedSessionAfterBootstrap();
     return { status: "authenticated" };
   } catch (error) {

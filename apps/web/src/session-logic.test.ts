@@ -19,6 +19,7 @@ import {
   findSidebarProposedPlan,
   hasActionableProposedPlan,
   hasToolActivityForTurn,
+  isSessionActivelyRunning,
   isLatestTurnSettled,
 } from "./session-logic";
 
@@ -1368,6 +1369,37 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries[0]?.label).toBe("Ran command");
   });
 
+  it("excludes usage activities from the work log", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "usage-started",
+          turnId: "turn-1",
+          kind: "usage.turn.started",
+          summary: "Usage started",
+          tone: "info",
+        }),
+        makeActivity({
+          id: "usage-completed",
+          turnId: "turn-1",
+          kind: "usage.turn.completed",
+          summary: "Usage completed",
+          tone: "info",
+        }),
+        makeActivity({
+          id: "tool-1",
+          turnId: "turn-1",
+          kind: "tool.completed",
+          summary: "Ran command",
+          tone: "tool",
+        }),
+      ],
+      TurnId.make("turn-1"),
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-1"]);
+  });
+
   it("keeps context compaction activities as normal work log entries", () => {
     const entries = deriveWorkLogEntries(
       [
@@ -1411,16 +1443,33 @@ describe("hasToolActivityForTurn", () => {
 describe("isLatestTurnSettled", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    state: "completed" as const,
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
 
-  it("returns false while the same turn is still active in a running session", () => {
+  it("returns true when the latest turn has completed even if the session still reports running", () => {
     expect(
       isLatestTurnSettled(latestTurn, {
         orchestrationStatus: "running",
         activeTurnId: TurnId.make("turn-1"),
       }),
+    ).toBe(true);
+  });
+
+  it("returns false while the same turn is still active without a completion timestamp", () => {
+    expect(
+      isLatestTurnSettled(
+        {
+          ...latestTurn,
+          state: "running" as const,
+          completedAt: null,
+        },
+        {
+          orchestrationStatus: "running",
+          activeTurnId: TurnId.make("turn-1"),
+        },
+      ),
     ).toBe(false);
   });
 
@@ -1447,6 +1496,7 @@ describe("isLatestTurnSettled", () => {
       isLatestTurnSettled(
         {
           turnId: TurnId.make("turn-1"),
+          state: "completed" as const,
           startedAt: null,
           completedAt: "2026-02-27T21:10:06.000Z",
         },
@@ -1456,17 +1506,54 @@ describe("isLatestTurnSettled", () => {
   });
 });
 
+describe("isSessionActivelyRunning", () => {
+  it("treats a running latest turn as active even when session status has not caught up", () => {
+    expect(
+      isSessionActivelyRunning(
+        {
+          turnId: TurnId.make("turn-1"),
+          state: "running",
+          startedAt: "2026-02-27T21:10:00.000Z",
+          completedAt: null,
+        },
+        {
+          orchestrationStatus: "ready",
+          activeTurnId: undefined,
+        },
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("deriveActiveWorkStartedAt", () => {
   const latestTurn = {
     turnId: TurnId.make("turn-1"),
+    state: "completed" as const,
     startedAt: "2026-02-27T21:10:00.000Z",
     completedAt: "2026-02-27T21:10:06.000Z",
   } as const;
 
-  it("prefers the in-flight turn start when the latest turn is not settled", () => {
+  it("uses sendStartedAt when a completed latest turn is followed by stale running status", () => {
     expect(
       deriveActiveWorkStartedAt(
         latestTurn,
+        {
+          orchestrationStatus: "running",
+          activeTurnId: TurnId.make("turn-1"),
+        },
+        "2026-02-27T21:11:00.000Z",
+      ),
+    ).toBe("2026-02-27T21:11:00.000Z");
+  });
+
+  it("prefers the in-flight turn start when the latest turn is not settled", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        {
+          ...latestTurn,
+          state: "running" as const,
+          completedAt: null,
+        },
         {
           orchestrationStatus: "running",
           activeTurnId: TurnId.make("turn-1"),
@@ -1507,6 +1594,7 @@ describe("deriveActiveWorkStartedAt", () => {
       deriveActiveWorkStartedAt(
         {
           turnId: TurnId.make("turn-1"),
+          state: "completed" as const,
           startedAt: "2026-02-27T21:10:00.000Z",
           completedAt: "2026-02-27T21:10:06.000Z",
         },

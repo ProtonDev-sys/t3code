@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 import { DateTime, Duration, Effect, Layer, Option, Result, Schema, Types } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -18,10 +21,12 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 
 import { buildServerProvider, type ServerProviderDraft } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import { CODEX_SLASH_COMMANDS } from "./CodexSlashCommands.ts";
 import { scopedSafeTeardown } from "./scopedSafeTeardown.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const PROVIDER_PROBE_TIMEOUT_MS = 8_000;
+const WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
@@ -30,6 +35,7 @@ const CODEX_PRESENTATION = {
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
   readonly version: string | undefined;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
@@ -130,6 +136,93 @@ const toDisplayName = (model: CodexSchema.V2ModelListResponse__Model): string =>
     .replace(/^gpt/i, "GPT") // Handle start with 'gpt' or 'GPT'
     .replace(/-([a-z])/g, (_, c) => "-" + c.toUpperCase());
 };
+
+const DEFAULT_CODEX_REASONING_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] satisfies ReadonlyArray<CodexSchema.V2ModelListResponse__ReasoningEffort>;
+
+function createCodexFallbackCapabilities(supportsFastMode: boolean): ModelCapabilities {
+  return createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select" as const,
+        options: DEFAULT_CODEX_REASONING_EFFORTS.map((reasoningEffort) =>
+          reasoningEffort === "medium"
+            ? {
+                id: reasoningEffort,
+                label: REASONING_EFFORT_LABELS[reasoningEffort],
+                isDefault: true,
+              }
+            : {
+                id: reasoningEffort,
+                label: REASONING_EFFORT_LABELS[reasoningEffort],
+              },
+        ),
+      },
+      ...(supportsFastMode
+        ? [
+            {
+              id: "fastMode",
+              label: "Fast Mode",
+              type: "boolean" as const,
+            },
+          ]
+        : []),
+    ],
+  });
+}
+
+const CODEX_FALLBACK_MODELS = [
+  {
+    slug: "gpt-5.5",
+    name: "GPT-5.5",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(true),
+  },
+  {
+    slug: "gpt-5.4",
+    name: "GPT-5.4",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(true),
+  },
+  {
+    slug: "gpt-5.4-mini",
+    name: "GPT-5.4-Mini",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(false),
+  },
+  {
+    slug: "gpt-5.3-codex",
+    name: "GPT-5.3-Codex",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(false),
+  },
+  {
+    slug: "gpt-5.3-codex-spark",
+    name: "GPT-5.3-Codex-Spark",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(false),
+  },
+  {
+    slug: "gpt-5.2",
+    name: "GPT-5.2",
+    isCustom: false,
+    capabilities: createCodexFallbackCapabilities(false),
+  },
+] satisfies ReadonlyArray<ServerProviderModel>;
+
+function withFallbackCodexModels(
+  models: ReadonlyArray<ServerProviderModel>,
+): ReadonlyArray<ServerProviderModel> {
+  const seen = new Set(models.map((model) => model.slug));
+  const missingModels = CODEX_FALLBACK_MODELS.filter((model) => !seen.has(model.slug));
+  return missingModels.length === 0 ? models : [...models, ...missingModels];
+}
 
 function parseCodexModelListResponse(
   response: CodexSchema.V2ModelListResponse,
@@ -290,17 +383,20 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     return {
       account: accountResponse,
       version,
-      models: appendCustomCodexModels([], input.customModels ?? []),
+      models: appendCustomCodexModels(CODEX_FALLBACK_MODELS, input.customModels ?? []),
       skills: [],
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      client
+        .request("account/rateLimits/read", undefined)
+        .pipe(Effect.option, Effect.map(Option.getOrUndefined)),
     ],
     { concurrency: "unbounded" },
   );
@@ -308,21 +404,14 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   return {
     account: accountResponse,
     version,
-    models: appendCustomCodexModels(models, input.customModels ?? []),
+    ...(rateLimits ? { rateLimits } : {}),
+    models: appendCustomCodexModels(withFallbackCodexModels(models), input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
   } satisfies CodexAppServerProviderSnapshot;
 }, scopedSafeTeardown("codex-probe"));
 
 const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvider["models"] =>
-  codexSettings.customModels
-    .map((model) => model.trim())
-    .filter((model, index, models) => model.length > 0 && models.indexOf(model) === index)
-    .map((model) => ({
-      slug: model,
-      name: model,
-      isCustom: true,
-      capabilities: null,
-    }));
+  appendCustomCodexModels(CODEX_FALLBACK_MODELS, codexSettings.customModels);
 
 const makePendingCodexProvider = (codexSettings: CodexSettings): ServerProviderDraft => {
   const checkedAt = new Date().toISOString();
@@ -335,6 +424,7 @@ const makePendingCodexProvider = (codexSettings: CodexSettings): ServerProviderD
       checkedAt,
       models,
       skills: [],
+      slashCommands: CODEX_SLASH_COMMANDS,
       probe: {
         installed: false,
         version: null,
@@ -351,6 +441,7 @@ const makePendingCodexProvider = (codexSettings: CodexSettings): ServerProviderD
     checkedAt,
     models,
     skills: [],
+    slashCommands: CODEX_SLASH_COMMANDS,
     probe: {
       installed: false,
       version: null,
@@ -360,6 +451,78 @@ const makePendingCodexProvider = (codexSettings: CodexSettings): ServerProviderD
     },
   });
 };
+
+function getEnvironmentPath(environment: NodeJS.ProcessEnv): string {
+  return environment.PATH ?? environment.Path ?? environment.path ?? "";
+}
+
+function getWindowsPathExtensions(environment: NodeJS.ProcessEnv): ReadonlyArray<string> {
+  const pathext = environment.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT;
+  return pathext
+    .split(path.delimiter)
+    .map((extension) => extension.trim().toLowerCase())
+    .filter(
+      (extension, index, extensions) =>
+        extension.length > 0 && extensions.indexOf(extension) === index,
+    );
+}
+
+function windowsExecutableCandidateExists(
+  candidate: string,
+  extensions: ReadonlyArray<string>,
+): boolean {
+  const extension = path.extname(candidate).toLowerCase();
+  if (extension && extensions.includes(extension)) {
+    return existsSync(candidate);
+  }
+  return extensions.some((pathExtension) => existsSync(`${candidate}${pathExtension}`));
+}
+
+function isWindowsCommandResolvable(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  cwd: string,
+): boolean {
+  const trimmedCommand = command.trim();
+  if (!trimmedCommand) return false;
+
+  const extensions = getWindowsPathExtensions(environment);
+  if (path.isAbsolute(trimmedCommand) || /[\\/]/.test(trimmedCommand)) {
+    return windowsExecutableCandidateExists(path.resolve(cwd, trimmedCommand), extensions);
+  }
+
+  const searchDirs = [cwd, ...getEnvironmentPath(environment).split(path.delimiter)];
+  return searchDirs.some((searchDir) => {
+    if (!searchDir) return false;
+    return windowsExecutableCandidateExists(path.join(searchDir, trimmedCommand), extensions);
+  });
+}
+
+function shouldPreflightCodexCommand(command: string): boolean {
+  return process.platform === "win32" && command.trim().length > 0;
+}
+
+function buildMissingCodexProvider(
+  codexSettings: CodexSettings,
+  checkedAt: string,
+  models: ServerProvider["models"],
+): ServerProviderDraft {
+  return buildServerProvider({
+    presentation: CODEX_PRESENTATION,
+    enabled: codexSettings.enabled,
+    checkedAt,
+    models,
+    skills: [],
+    slashCommands: CODEX_SLASH_COMMANDS,
+    probe: {
+      installed: false,
+      version: null,
+      status: "error",
+      auth: { status: "unknown" },
+      message: "Codex CLI (`codex`) is not installed or not on PATH.",
+    },
+  });
+}
 
 function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]): {
   readonly status: Exclude<ServerProviderState, "disabled">;
@@ -411,6 +574,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
+  const cwd = process.cwd();
 
   if (!codexSettings.enabled) {
     return buildServerProvider({
@@ -419,6 +583,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       checkedAt,
       models: emptyModels,
       skills: [],
+      slashCommands: CODEX_SLASH_COMMANDS,
       probe: {
         installed: false,
         version: null,
@@ -429,10 +594,17 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     });
   }
 
+  if (
+    shouldPreflightCodexCommand(codexSettings.binaryPath) &&
+    !isWindowsCommandResolvable(codexSettings.binaryPath, environment, cwd)
+  ) {
+    return buildMissingCodexProvider(codexSettings, checkedAt, emptyModels);
+  }
+
   const probeResult = yield* probe({
     binaryPath: codexSettings.binaryPath,
     homePath: codexSettings.homePath,
-    cwd: process.cwd(),
+    cwd,
     customModels: codexSettings.customModels,
     environment,
   }).pipe(Effect.timeoutOption(Duration.millis(PROVIDER_PROBE_TIMEOUT_MS)), Effect.result);
@@ -440,20 +612,22 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   if (Result.isFailure(probeResult)) {
     const error = probeResult.failure;
     const installed = !Schema.is(CodexErrors.CodexAppServerSpawnError)(error);
+    if (!installed) {
+      return buildMissingCodexProvider(codexSettings, checkedAt, emptyModels);
+    }
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
       enabled: codexSettings.enabled,
       checkedAt,
       models: emptyModels,
       skills: [],
+      slashCommands: CODEX_SLASH_COMMANDS,
       probe: {
         installed,
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message: installed
-          ? `Codex app-server provider probe failed: ${error.message}.`
-          : "Codex CLI (`codex`) is not installed or not on PATH.",
+        message: `Codex app-server provider probe failed: ${error.message}.`,
       },
     });
   }
@@ -465,6 +639,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       checkedAt,
       models: emptyModels,
       skills: [],
+      slashCommands: CODEX_SLASH_COMMANDS,
       probe: {
         installed: true,
         version: null,
@@ -477,19 +652,30 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
+  const usage = snapshot.rateLimits
+    ? ({
+        checkedAt,
+        rateLimits: snapshot.rateLimits,
+      } satisfies ServerProvider["usage"])
+    : undefined;
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
     enabled: codexSettings.enabled,
     checkedAt,
-    models: snapshot.models,
+    models: appendCustomCodexModels(
+      withFallbackCodexModels(snapshot.models),
+      codexSettings.customModels,
+    ),
     skills: snapshot.skills,
+    slashCommands: CODEX_SLASH_COMMANDS,
     probe: {
       installed: true,
       version: snapshot.version ?? null,
       status: accountStatus.status,
       auth: accountStatus.auth,
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
+      ...(usage ? { usage } : {}),
     },
   });
 });

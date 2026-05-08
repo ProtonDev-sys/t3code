@@ -11,6 +11,8 @@ class BootstrapError extends Data.TaggedError("BootstrapError")<{
   readonly cause?: unknown;
 }> {}
 
+const ignoreCleanupStreamError = () => {};
+
 export const readBootstrapEnvelope = Effect.fn("readBootstrapEnvelope")(function* <A, I>(
   schema: Schema.Codec<A, I>,
   fd: number,
@@ -31,12 +33,19 @@ export const readBootstrapEnvelope = Effect.fn("readBootstrapEnvelope")(function
       crlfDelay: Infinity,
     });
 
+    let cleanedUp = false;
+    let completed = false;
     const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       stream.removeListener("error", handleError);
       input.removeListener("line", handleLine);
       input.removeListener("close", handleClose);
+      stream.on("error", ignoreCleanupStreamError);
       input.close();
-      stream.destroy();
+      if (!completed) {
+        stream.destroy();
+      }
     };
 
     const handleError = (error: Error) => {
@@ -55,6 +64,7 @@ export const readBootstrapEnvelope = Effect.fn("readBootstrapEnvelope")(function
     };
 
     const handleLine = (line: string) => {
+      completed = true;
       const parsed = decodeJsonResult(schema)(line);
       if (Result.isSuccess(parsed)) {
         resume(Effect.succeedSome(parsed.success));
@@ -71,6 +81,7 @@ export const readBootstrapEnvelope = Effect.fn("readBootstrapEnvelope")(function
     };
 
     const handleClose = () => {
+      completed = true;
       resume(Effect.succeedNone);
     };
 

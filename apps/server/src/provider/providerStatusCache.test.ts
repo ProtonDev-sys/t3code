@@ -97,6 +97,16 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
           capabilities: emptyCapabilities,
         },
       ],
+      slashCommands: [
+        {
+          name: "cached-only",
+          description: "Command only present in the cached provider snapshot",
+        },
+        {
+          name: "goal",
+          description: "Cached goal description",
+        },
+      ],
       message: "Cached message",
       skills: [
         {
@@ -114,6 +124,12 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
           name: "GPT-5.4",
           isCustom: false,
           capabilities: emptyCapabilities,
+        },
+      ],
+      slashCommands: [
+        {
+          name: "goal",
+          description: "Current goal description",
         },
       ],
       message: "Pending refresh",
@@ -140,7 +156,16 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         status: cachedCodex.status,
         auth: cachedCodex.auth,
         checkedAt: cachedCodex.checkedAt,
-        slashCommands: cachedCodex.slashCommands,
+        slashCommands: [
+          {
+            name: "goal",
+            description: "Current goal description",
+          },
+          {
+            name: "cached-only",
+            description: "Command only present in the cached provider snapshot",
+          },
+        ],
         skills: cachedCodex.skills,
         message: cachedCodex.message,
       },

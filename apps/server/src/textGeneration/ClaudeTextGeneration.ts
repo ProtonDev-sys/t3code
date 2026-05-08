@@ -42,6 +42,9 @@ import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 
+const escapeWindowsShellJsonArg = (value: string): string =>
+  process.platform === "win32" ? value.replaceAll('"', '\\"') : value;
+
 /**
  * Schema for the wrapper JSON returned by `claude -p --output-format json`.
  * We only care about `structured_output`.
@@ -93,7 +96,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     outputSchemaJson: S;
     modelSelection: ModelSelection;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
-    const jsonSchemaStr = JSON.stringify(toJsonSchemaObject(outputSchemaJson));
+    const jsonSchemaStr = escapeWindowsShellJsonArg(
+      JSON.stringify(toJsonSchemaObject(outputSchemaJson)),
+    );
     const caps = getClaudeModelCapabilities(modelSelection.model);
     const descriptors = getProviderOptionDescriptors({
       caps,
@@ -126,7 +131,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--model",
           resolveClaudeApiModelId(modelSelection),
           ...(cliEffort ? ["--effort", cliEffort] : []),
-          ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
+          ...(Object.keys(settings).length > 0
+            ? ["--settings", escapeWindowsShellJsonArg(JSON.stringify(settings))]
+            : []),
           "--dangerously-skip-permissions",
         ],
         {

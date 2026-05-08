@@ -3,6 +3,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { shortcutLabelForCommand } from "../keybindings";
 import {
   type CommandPaletteActionItem,
+  type CommandPaletteAdornment,
   type CommandPaletteGroup,
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
@@ -63,16 +64,23 @@ export function CommandPaletteResults(props: CommandPaletteResultsProps) {
   );
 }
 
+function renderAdornment(adornment: CommandPaletteAdornment | undefined) {
+  return typeof adornment === "function" ? adornment() : adornment;
+}
+
 function DisabledCommandPaletteResultRow(props: {
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem;
 }) {
+  const titleLeadingContent = renderAdornment(props.item.titleLeadingContent);
+  const titleTrailingContent = renderAdornment(props.item.titleTrailingContent);
+
   return (
     <div className="flex min-h-8 select-none items-center gap-2 rounded-sm px-2 py-1.5 text-base opacity-64 sm:min-h-7 sm:text-sm">
       {props.item.icon}
       {props.item.description ? (
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
-            {props.item.titleLeadingContent}
+            {titleLeadingContent}
             <span className="truncate">{props.item.title}</span>
           </span>
           <span className="truncate text-muted-foreground/70 text-xs">
@@ -81,11 +89,11 @@ function DisabledCommandPaletteResultRow(props: {
         </span>
       ) : (
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-foreground">
-          {props.item.titleLeadingContent}
+          {titleLeadingContent}
           <span className="truncate">{props.item.title}</span>
         </span>
       )}
-      {props.item.titleTrailingContent}
+      {titleTrailingContent}
     </div>
   );
 }
@@ -99,6 +107,8 @@ function CommandPaletteResultRow(props: {
   const shortcutLabel = props.item.shortcutCommand
     ? shortcutLabelForCommand(props.keybindings, props.item.shortcutCommand)
     : null;
+  const titleLeadingContent = renderAdornment(props.item.titleLeadingContent);
+  const titleTrailingContent = renderAdornment(props.item.titleTrailingContent);
 
   return (
     <CommandItem
@@ -118,7 +128,7 @@ function CommandPaletteResultRow(props: {
       {props.item.description ? (
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
-            {props.item.titleLeadingContent}
+            {titleLeadingContent}
             <span className="truncate">{props.item.title}</span>
           </span>
           <span className="truncate text-muted-foreground/70 text-xs">
@@ -127,11 +137,11 @@ function CommandPaletteResultRow(props: {
         </span>
       ) : (
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-foreground">
-          {props.item.titleLeadingContent}
+          {titleLeadingContent}
           <span className="truncate">{props.item.title}</span>
         </span>
       )}
-      {props.item.titleTrailingContent}
+      {titleTrailingContent}
       {props.item.timestamp ? (
         <span className="min-w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/70">
           {props.item.timestamp}

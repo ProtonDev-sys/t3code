@@ -6,7 +6,7 @@ export type RevealSubscription = (listener: () => void) => void;
  * its own event source.
  *
  * Used by the desktop main window's first-paint reveal logic. The standard
- * Electron pattern is to wait for `ready-to-show` before calling `show()`,
+ * Desktop webview pattern is to wait for `ready-to-show` before calling `show()`,
  * but on Linux/Wayland with `show: false`, `ready-to-show` only fires after
  * `show()` is called, deadlocking that pattern. Subscribing to both
  * `ready-to-show` and `did-finish-load` (or any other "renderer is alive"

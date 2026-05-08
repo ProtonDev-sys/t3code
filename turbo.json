@@ -11,6 +11,7 @@
     "T3CODE_NO_BROWSER",
     "T3CODE_HOME",
     "T3CODE_AUTH_TOKEN",
+    "T3CODE_DESKTOP_BOOTSTRAP_TOKEN",
     "T3CODE_TAILSCALE_SERVE",
     "T3CODE_TAILSCALE_SERVE_PORT",
     "T3CODE_DESKTOP_WS_URL",
@@ -29,7 +30,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "dist-electron/**"]
+      "outputs": ["dist/**", "src-tauri/target/**"]
     },
     "dev": {
       "dependsOn": ["@t3tools/contracts#build"],

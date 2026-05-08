@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist-electron/**"],
+      "outputs": ["dist/**", "src-tauri/target/**"],
     },
     "dev": {
       "dependsOn": ["t3#build"],

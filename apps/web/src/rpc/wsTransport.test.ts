@@ -360,11 +360,11 @@ describe("WsTransport", () => {
 
     const secondSocket = getSocket();
     expect(secondSocket).not.toBe(firstSocket);
-    expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(firstSocket.readyState).toBe(MockWebSocket.OPEN);
     expect(getWsConnectionStatus()).toMatchObject({
       closeCode: null,
       closeReason: null,
-      phase: "connecting",
+      phase: "connected",
     });
 
     const requestPromise = transport.request((client) =>
@@ -375,6 +375,10 @@ describe("WsTransport", () => {
     );
 
     secondSocket.open();
+
+    await waitFor(() => {
+      expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+    });
 
     await waitFor(() => {
       expect(secondSocket.sent).toHaveLength(1);
@@ -431,7 +435,7 @@ describe("WsTransport", () => {
     expect(getWsConnectionStatus()).toMatchObject({
       closeCode: null,
       closeReason: null,
-      phase: "connecting",
+      phase: "connected",
     });
 
     const secondSocket = getSocket();
@@ -877,9 +881,13 @@ describe("WsTransport", () => {
 
     const secondSocket = getSocket();
     expect(secondSocket).not.toBe(firstSocket);
-    expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(firstSocket.readyState).toBe(MockWebSocket.OPEN);
 
     secondSocket.open();
+
+    await waitFor(() => {
+      expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+    });
 
     await waitFor(() => {
       expect(secondSocket.sent).toHaveLength(1);
@@ -1164,6 +1172,7 @@ describe("WsTransport", () => {
         clientScope: {} as never,
         runtime,
       },
+      warmSwapPreviousSessions: new Set(),
       closeSession: (
         WsTransport.prototype as unknown as {
           closeSession: (session: {

@@ -1,0 +1,28 @@
+[package]
+name = "t3code-desktop"
+version = "0.0.22"
+description = "T3 Code desktop shell"
+authors = ["T3 Tools"]
+license = "MIT"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[dependencies]
+dirs = "6.0.0"
+keyring = { version = "3.6.3", features = [
+  "apple-native",
+  "linux-native-sync-persistent",
+  "windows-native",
+] }
+local-ip-address = "0.6.12"
+rand = "0.9.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-updater = "2.10.1"
+time = { version = "0.3", features = ["formatting"] }
+url = "2.5.7"

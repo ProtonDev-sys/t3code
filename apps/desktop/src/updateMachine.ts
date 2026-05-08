@@ -164,3 +164,15 @@ export function reduceDesktopUpdateStateOnInstallFailure(
     canRetry: true,
   };
 }
+
+export function reduceDesktopUpdateStateOnInstallStart(
+  state: DesktopUpdateState,
+): DesktopUpdateState {
+  return {
+    ...state,
+    status: "installing",
+    message: "Installing update and restarting T3 Code.",
+    errorContext: null,
+    canRetry: false,
+  };
+}

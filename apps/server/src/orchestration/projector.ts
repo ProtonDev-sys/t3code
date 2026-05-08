@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -21,6 +26,7 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadTurnInterruptRequestedPayload,
   ThreadUnarchivedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
@@ -37,12 +43,33 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function isSessionReopeningTerminalTurn(
+  session: OrchestrationSession,
+  latestTurn: OrchestrationThread["latestTurn"],
+): boolean {
+  return (
+    session.status === "running" &&
+    session.activeTurnId !== null &&
+    latestTurn !== null &&
+    latestTurn.turnId === session.activeTurnId &&
+    latestTurn.completedAt !== null
+  );
+}
+
 function updateThread(
   threads: ReadonlyArray<OrchestrationThread>,
   threadId: ThreadId,
   patch: ThreadPatch,
 ): OrchestrationThread[] {
   return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+}
+
+function shouldApplyTurnUpdate(thread: OrchestrationThread, turnId: TurnId): boolean {
+  return (
+    thread.latestTurn === null ||
+    thread.latestTurn.turnId === turnId ||
+    thread.session?.activeTurnId === turnId
+  );
 }
 
 function decodeForEvent<A>(
@@ -408,11 +435,103 @@ export function projectEvent(
             )
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
+        const shouldUpdateLatestTurn =
+          payload.role === "assistant" &&
+          payload.turnId !== null &&
+          shouldApplyTurnUpdate(thread, payload.turnId);
+        const sameLatestTurn =
+          shouldUpdateLatestTurn && thread.latestTurn?.turnId === payload.turnId;
+        const existingLatestTurn = sameLatestTurn ? thread.latestTurn : null;
+        const existingTerminalState =
+          existingLatestTurn?.state === "completed" ||
+          existingLatestTurn?.state === "error" ||
+          existingLatestTurn?.state === "interrupted"
+            ? existingLatestTurn.state
+            : null;
+        const nextLatestTurn: OrchestrationThread["latestTurn"] =
+          shouldUpdateLatestTurn && payload.turnId !== null
+            ? {
+                turnId: payload.turnId,
+                state: payload.streaming
+                  ? (existingTerminalState ?? "running")
+                  : (existingTerminalState ?? "completed"),
+                requestedAt: existingLatestTurn?.requestedAt ?? payload.createdAt,
+                startedAt: existingLatestTurn?.startedAt ?? payload.createdAt,
+                completedAt: payload.streaming
+                  ? (existingLatestTurn?.completedAt ?? null)
+                  : (existingLatestTurn?.completedAt ?? payload.updatedAt),
+                assistantMessageId: payload.messageId,
+              }
+            : thread.latestTurn;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            latestTurn: nextLatestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-interrupt-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnInterruptRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        const interruptedTurnId =
+          payload.turnId ??
+          (thread.session?.status === "running" ? thread.session.activeTurnId : null);
+        if (interruptedTurnId === null || interruptedTurnId === undefined) {
+          return nextBase;
+        }
+
+        const shouldClearSession =
+          thread.session?.status === "running" &&
+          (thread.session.activeTurnId === null ||
+            thread.session.activeTurnId === interruptedTurnId);
+        const session =
+          shouldClearSession && thread.session
+            ? {
+                ...thread.session,
+                status: "ready" as const,
+                activeTurnId: null,
+                updatedAt: payload.createdAt,
+              }
+            : thread.session;
+        const latestTurn = shouldApplyTurnUpdate(thread, interruptedTurnId)
+          ? {
+              turnId: interruptedTurnId,
+              state: "interrupted" as const,
+              requestedAt:
+                thread.latestTurn?.turnId === interruptedTurnId
+                  ? thread.latestTurn.requestedAt
+                  : payload.createdAt,
+              startedAt:
+                thread.latestTurn?.turnId === interruptedTurnId
+                  ? (thread.latestTurn.startedAt ?? payload.createdAt)
+                  : payload.createdAt,
+              completedAt: payload.createdAt,
+              assistantMessageId:
+                thread.latestTurn?.turnId === interruptedTurnId
+                  ? thread.latestTurn.assistantMessageId
+                  : null,
+            }
+          : thread.latestTurn;
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            session,
+            latestTurn,
             updatedAt: event.occurredAt,
           }),
         };
@@ -437,27 +556,37 @@ export function projectEvent(
           event.type,
           "session",
         );
+        const projectedSession: OrchestrationSession = isSessionReopeningTerminalTurn(
+          session,
+          thread.latestTurn,
+        )
+          ? {
+              ...session,
+              status: "ready",
+              activeTurnId: null,
+            }
+          : session;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            session,
+            session: projectedSession,
             latestTurn:
-              session.status === "running" && session.activeTurnId !== null
+              projectedSession.status === "running" && projectedSession.activeTurnId !== null
                 ? {
-                    turnId: session.activeTurnId,
+                    turnId: projectedSession.activeTurnId,
                     state: "running",
                     requestedAt:
-                      thread.latestTurn?.turnId === session.activeTurnId
+                      thread.latestTurn?.turnId === projectedSession.activeTurnId
                         ? thread.latestTurn.requestedAt
-                        : session.updatedAt,
+                        : projectedSession.updatedAt,
                     startedAt:
-                      thread.latestTurn?.turnId === session.activeTurnId
-                        ? (thread.latestTurn.startedAt ?? session.updatedAt)
-                        : session.updatedAt,
+                      thread.latestTurn?.turnId === projectedSession.activeTurnId
+                        ? (thread.latestTurn.startedAt ?? projectedSession.updatedAt)
+                        : projectedSession.updatedAt,
                     completedAt: null,
                     assistantMessageId:
-                      thread.latestTurn?.turnId === session.activeTurnId
+                      thread.latestTurn?.turnId === projectedSession.activeTurnId
                         ? thread.latestTurn.assistantMessageId
                         : null,
                   }

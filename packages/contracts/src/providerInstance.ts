@@ -111,6 +111,25 @@ export type ProviderInstanceEnvironmentVariable = typeof ProviderInstanceEnviron
 export const ProviderInstanceEnvironment = Schema.Array(ProviderInstanceEnvironmentVariable);
 export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Type;
 
+export const ProviderCustomAgentId = slugSchema.pipe(Schema.brand("ProviderCustomAgentId"));
+export type ProviderCustomAgentId = typeof ProviderCustomAgentId.Type;
+
+export const ProviderCustomAgent = Schema.Struct({
+  id: ProviderCustomAgentId,
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  instructions: TrimmedNonEmptyString,
+  nicknameCandidates: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  model: Schema.optional(TrimmedNonEmptyString),
+  reasoningEffort: Schema.optional(TrimmedNonEmptyString),
+  sandboxMode: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type ProviderCustomAgent = typeof ProviderCustomAgent.Type;
+
+export const ProviderCustomAgents = Schema.Array(ProviderCustomAgent);
+export type ProviderCustomAgents = typeof ProviderCustomAgents.Type;
+
 /**
  * Envelope shape for a provider instance configuration in `ServerSettings`.
  *
@@ -126,6 +145,8 @@ export const ProviderInstanceConfig = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  mcpEnabled: Schema.optionalKey(Schema.Boolean),
+  customAgents: Schema.optionalKey(ProviderCustomAgents),
   config: Schema.optionalKey(Schema.Unknown),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;

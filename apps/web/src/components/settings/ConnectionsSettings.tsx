@@ -316,6 +316,14 @@ function formatDesktopSshConnectionError(error: unknown): string {
   return withoutTaggedErrorPrefix.trim() || fallback;
 }
 
+function formatUnknownError(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.trim();
+  }
+  const message = String(error ?? "").trim();
+  return message.length > 0 ? message : fallback;
+}
+
 /** Direct row in the card – same pattern as the Provider / ACP-agent list rows. */
 const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
 const ENDPOINT_ROW_CLASSNAME = "border-t border-border/60 px-4 py-2.5 first:border-t-0 sm:px-5";
@@ -1955,8 +1963,9 @@ export function ConnectionsSettings() {
     type AuthAccessEvent = Parameters<
       Parameters<WsRpcClient["server"]["subscribeAuthAccess"]>[0]
     >[0];
-    const unsubscribeAuthAccess =
-      getPrimaryEnvironmentConnection().client.server.subscribeAuthAccess(
+    let unsubscribeAuthAccess: () => void = () => undefined;
+    try {
+      unsubscribeAuthAccess = getPrimaryEnvironmentConnection().client.server.subscribeAuthAccess(
         (event: AuthAccessEvent) => {
           if (cancelled) {
             return;
@@ -2012,6 +2021,14 @@ export function ConnectionsSettings() {
           },
         },
       );
+    } catch (error) {
+      if (!cancelled) {
+        setDesktopAccessManagementError(
+          formatUnknownError(error, "Failed to load local backend access."),
+        );
+        setIsLoadingDesktopAccessManagement(false);
+      }
+    }
     if (desktopBridge) {
       void desktopBridge
         .getServerExposureState()
@@ -2021,9 +2038,9 @@ export function ConnectionsSettings() {
         })
         .catch((error: unknown) => {
           if (cancelled) return;
-          const message =
-            error instanceof Error ? error.message : "Failed to load network exposure state.";
-          setDesktopServerExposureError(message);
+          setDesktopServerExposureError(
+            formatUnknownError(error, "Failed to load network exposure state."),
+          );
         });
       void desktopBridge
         .getAdvertisedEndpoints()
@@ -2031,11 +2048,9 @@ export function ConnectionsSettings() {
           if (cancelled) return;
           setDesktopAdvertisedEndpoints(endpoints);
         })
-        .catch((error: unknown) => {
+        .catch(() => {
           if (cancelled) return;
-          const message =
-            error instanceof Error ? error.message : "Failed to load reachable endpoints.";
-          setDesktopServerExposureError(message);
+          setDesktopAdvertisedEndpoints([]);
         });
     } else {
       setDesktopServerExposureState(null);

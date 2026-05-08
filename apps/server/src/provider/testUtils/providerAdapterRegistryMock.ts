@@ -69,6 +69,8 @@ export const makeAdapterRegistryMock = (adapters: KindAdapterMap): ProviderAdapt
         driverKind: ProviderDriverKind.make(adapter.provider),
         displayName: undefined,
         enabled: true,
+        mcpEnabled: true,
+        customAgents: [],
         continuationIdentity: {
           driverKind: ProviderDriverKind.make(adapter.provider),
           continuationKey: `${adapter.provider}:instance:${instanceId}`,

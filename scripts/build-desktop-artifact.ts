@@ -1,64 +1,50 @@
 #!/usr/bin/env node
 
-import rootPackageJson from "../package.json" with { type: "json" };
-import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import * as NodePath from "node:path";
 
-import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { BRAND_ASSET_PATHS, type WebAssetBrand } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
-import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  Config,
-  Data,
-  Effect,
-  FileSystem,
-  Layer,
-  Logger,
-  Option,
-  Path,
-  Schema,
-  Stream,
-} from "effect";
+import { Config, Data, Effect, FileSystem, Layer, Logger, Option, Path, Schema } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+const MockUpdateServerPortSchema = Schema.NumberFromString.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 1, maximum: 65535 }),
+);
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
-const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
-
-interface DesktopBuildIconAssets {
-  readonly macIconPng: string;
-  readonly linuxIconPng: string;
-  readonly windowsIconIco: string;
-}
 
 interface PlatformConfig {
-  readonly cliFlag: "--mac" | "--linux" | "--win";
   readonly defaultTarget: string;
+  readonly bundleChoices: ReadonlyArray<string>;
   readonly archChoices: ReadonlyArray<typeof BuildArch.Type>;
 }
 
 const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
   mac: {
-    cliFlag: "--mac",
     defaultTarget: "dmg",
+    bundleChoices: ["dmg", "app"],
     archChoices: ["arm64", "x64", "universal"],
   },
   linux: {
-    cliFlag: "--linux",
-    defaultTarget: "AppImage",
+    defaultTarget: "appimage",
+    bundleChoices: ["appimage", "deb", "rpm"],
     archChoices: ["x64", "arm64"],
   },
   win: {
-    cliFlag: "--win",
     defaultTarget: "nsis",
+    bundleChoices: ["nsis", "msi"],
     archChoices: ["x64", "arm64"],
   },
 };
@@ -77,124 +63,7 @@ interface BuildCliInput {
   readonly mockUpdateServerPort: Option.Option<number>;
 }
 
-function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
-  if (hostPlatform === "darwin") return "mac";
-  if (hostPlatform === "linux") return "linux";
-  if (hostPlatform === "win32") return "win";
-  return undefined;
-}
-
-function getDefaultArch(platform: typeof BuildPlatform.Type): typeof BuildArch.Type {
-  const config = PLATFORM_CONFIG[platform];
-  if (!config) {
-    return "x64";
-  }
-
-  return getDefaultBuildArch(platform, process.arch, process.env, config);
-}
-
-class BuildScriptError extends Data.TaggedError("BuildScriptError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
-
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (acc, chunk) => acc + chunk,
-    ),
-  );
-
-const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
-  command: ChildProcess.Command,
-) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* spawner.spawn(command);
-
-  const [stdout, stderr, exitCode] = yield* Effect.all(
-    [
-      collectStreamAsString(child.stdout),
-      collectStreamAsString(child.stderr),
-      child.exitCode.pipe(Effect.map(Number)),
-    ],
-    { concurrency: "unbounded" },
-  );
-
-  return { stdout, stderr, exitCode } as const;
-});
-
-const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
-  const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
-      cwd: repoRoot,
-    }),
-  ).pipe(
-    Effect.catch(() =>
-      Effect.succeed({
-        stdout: "",
-        stderr: "",
-        exitCode: 1,
-      }),
-    ),
-  );
-
-  if (result.exitCode !== 0) {
-    return "unknown";
-  }
-  const hash = result.stdout.trim();
-  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
-    return "unknown";
-  }
-  return hash.toLowerCase();
-});
-
-const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const configured = process.env.npm_config_python ?? process.env.PYTHON;
-  if (configured && (yield* fs.exists(configured))) {
-    return configured;
-  }
-
-  if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA;
-    if (localAppData) {
-      for (const version of ["Python313", "Python312", "Python311", "Python310"]) {
-        const candidate = path.join(localAppData, "Programs", "Python", version, "python.exe");
-        if (yield* fs.exists(candidate)) {
-          return candidate;
-        }
-      }
-    }
-  }
-
-  const probe = yield* spawnAndCollectOutput(
-    ChildProcess.make("python", ["-c", "import sys;print(sys.executable)"]),
-  ).pipe(
-    Effect.catch(() =>
-      Effect.succeed({
-        stdout: "",
-        stderr: "",
-        exitCode: 1,
-      }),
-    ),
-  );
-
-  if (probe.exitCode !== 0) {
-    return undefined;
-  }
-
-  const executable = probe.stdout.trim();
-  if (!executable || !(yield* fs.exists(executable))) {
-    return undefined;
-  }
-
-  return executable;
-});
-
-interface ResolvedBuildOptions {
+export interface ResolvedBuildOptions {
   readonly platform: typeof BuildPlatform.Type;
   readonly target: string;
   readonly arch: typeof BuildArch.Type;
@@ -206,38 +75,21 @@ interface ResolvedBuildOptions {
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
+  readonly updaterPubkey: string | undefined;
+  readonly updaterEndpoints: readonly string[];
+  readonly createUpdaterArtifacts: boolean;
 }
 
-interface StagePackageJson {
-  readonly name: string;
-  readonly version: string;
-  readonly buildVersion: string;
-  readonly t3codeCommitHash: string;
-  readonly private: true;
-  readonly description: string;
-  readonly author: string;
-  readonly main: string;
-  readonly build: Record<string, unknown>;
-  readonly dependencies: Record<string, unknown>;
-  readonly devDependencies: {
-    readonly electron: string;
-  };
-  readonly overrides: Record<string, unknown>;
+export interface DesktopBuildIconAssets {
+  readonly macIconPng: string;
+  readonly linuxIconPng: string;
+  readonly windowsIconIco: string;
 }
 
-const AzureTrustedSigningOptionsConfig = Config.all({
-  publisherName: Config.string("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
-  endpoint: Config.string("AZURE_TRUSTED_SIGNING_ENDPOINT"),
-  certificateProfileName: Config.string("AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME"),
-  codeSigningAccountName: Config.string("AZURE_TRUSTED_SIGNING_ACCOUNT_NAME"),
-  fileDigest: Config.string("AZURE_TRUSTED_SIGNING_FILE_DIGEST").pipe(Config.withDefault("SHA256")),
-  timestampDigest: Config.string("AZURE_TRUSTED_SIGNING_TIMESTAMP_DIGEST").pipe(
-    Config.withDefault("SHA256"),
-  ),
-  timestampRfc3161: Config.string("AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161").pipe(
-    Config.withDefault("http://timestamp.acs.microsoft.com"),
-  ),
-});
+class BuildScriptError extends Data.TaggedError("BuildScriptError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 const BuildEnvConfig = Config.all({
   platform: Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM").pipe(Config.option),
@@ -251,18 +103,51 @@ const BuildEnvConfig = Config.all({
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+  updaterPubkey: Config.string("T3CODE_TAURI_UPDATER_PUBKEY").pipe(Config.option),
+  updaterFallbackPubkey: Config.string("TAURI_SIGNING_PUBLIC_KEY").pipe(Config.option),
+  updaterEndpoints: Config.string("T3CODE_TAURI_UPDATER_ENDPOINTS").pipe(Config.option),
+  createUpdaterArtifacts: Config.boolean("T3CODE_TAURI_CREATE_UPDATER_ARTIFACTS").pipe(
+    Config.withDefault(false),
+  ),
 });
 
-const MockUpdateServerPortSchema = Schema.NumberFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 65535 }),
-);
-const decodeMockUpdateServerPort = Schema.decodeUnknownEffect(MockUpdateServerPortSchema);
+function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
+  if (hostPlatform === "darwin") return "mac";
+  if (hostPlatform === "linux") return "linux";
+  if (hostPlatform === "win32") return "win";
+  return undefined;
+}
+
+function getDefaultArch(platform: typeof BuildPlatform.Type): typeof BuildArch.Type {
+  return getDefaultBuildArch(platform, process.arch, process.env, PLATFORM_CONFIG[platform]);
+}
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
   Option.getOrElse(flag, () => envValue);
+
 const mergeOptions = <A>(a: Option.Option<A>, b: Option.Option<A>, defaultValue: A) =>
   Option.getOrElse(a, () => Option.getOrElse(b, () => defaultValue));
+
+function resolveBunExecutable(): string {
+  if (process.platform !== "win32") {
+    return "bun";
+  }
+
+  const candidates = [
+    process.env.BUN_INSTALL ? NodePath.join(process.env.BUN_INSTALL, "bin", "bun.exe") : null,
+    process.env.APPDATA
+      ? NodePath.join(process.env.APPDATA, "npm", "node_modules", "bun", "bin", "bun.exe")
+      : null,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "bun";
+}
 
 export const resolveMockUpdateServerPort = Effect.fn("resolveMockUpdateServerPort")(function* (
   mockUpdateServerPort: string | undefined,
@@ -272,264 +157,40 @@ export const resolveMockUpdateServerPort = Effect.fn("resolveMockUpdateServerPor
     return undefined;
   }
 
-  return yield* decodeMockUpdateServerPort(port);
+  return yield* Schema.decodeUnknownEffect(MockUpdateServerPortSchema)(port);
 });
 
-export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
-  input: BuildCliInput,
-) {
-  const path = yield* Path.Path;
-  const repoRoot = yield* RepoRoot;
-  const env = yield* BuildEnvConfig.asEffect();
+export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefined): string {
+  return `http://localhost:${mockUpdateServerPort ?? 3000}`;
+}
 
-  const platform = mergeOptions(
-    input.platform,
-    env.platform,
-    detectHostBuildPlatform(process.platform),
-  );
+function splitCsv(rawValue: string | undefined): readonly string[] {
+  return (rawValue ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
 
-  if (!platform) {
-    return yield* new BuildScriptError({
-      message: `Unsupported host platform '${process.platform}'.`,
-    });
+function resolveUpdaterEndpointConfig(input: {
+  readonly configuredEndpoints: string | undefined;
+  readonly mockUpdates: boolean;
+  readonly mockUpdateServerPort: number | undefined;
+}): readonly string[] {
+  const endpoints = [...splitCsv(input.configuredEndpoints)];
+  if (input.mockUpdates) {
+    endpoints.unshift(`${resolveMockUpdateServerUrl(input.mockUpdateServerPort)}/latest.json`);
   }
-
-  const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
-  const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
-  const version = mergeOptions(input.buildVersion, env.version, undefined);
-  const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
-    ? "release-mock"
-    : "release";
-  const outputDir = path.resolve(
-    repoRoot,
-    mergeOptions(input.outputDir, env.outputDir, releaseDir),
-  );
-
-  const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
-  const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
-  const signed = resolveBooleanFlag(input.signed, env.signed);
-  const verbose = resolveBooleanFlag(input.verbose, env.verbose);
-
-  const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
-  const mockUpdateServerPort =
-    Option.getOrUndefined(input.mockUpdateServerPort) ??
-    (yield* resolveMockUpdateServerPort(Option.getOrUndefined(env.mockUpdateServerPort)).pipe(
-      Effect.mapError(
-        (cause) =>
-          new BuildScriptError({
-            message: "Invalid mock update server port.",
-            cause,
-          }),
-      ),
-    ));
-
-  return {
-    platform,
-    target,
-    arch,
-    version,
-    outputDir,
-    skipBuild,
-    keepStage,
-    signed,
-    verbose,
-    mockUpdates,
-    mockUpdateServerPort,
-  } satisfies ResolvedBuildOptions;
-});
-
-const commandOutputOptions = (verbose: boolean) =>
-  ({
-    stdout: verbose ? "inherit" : "ignore",
-    stderr: "inherit",
-  }) as const;
-
-const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Command) {
-  const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const child = yield* commandSpawner.spawn(command);
-  const exitCode = yield* child.exitCode;
-
-  if (exitCode !== 0) {
-    return yield* new BuildScriptError({
-      message: `Command exited with non-zero exit code (${exitCode})`,
-    });
-  }
-});
-
-function generateMacIconSet(
-  sourcePng: string,
-  targetIcns: string,
-  tmpRoot: string,
-  path: Path.Path,
-  verbose: boolean,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const iconsetDir = path.join(tmpRoot, "icon.iconset");
-    yield* fs.makeDirectory(iconsetDir, { recursive: true });
-
-    const iconSizes = [16, 32, 128, 256, 512] as const;
-    for (const size of iconSizes) {
-      yield* runCommand(
-        ChildProcess.make({
-          ...commandOutputOptions(verbose),
-        })`sips -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
-      );
-
-      const retinaSize = size * 2;
-      yield* runCommand(
-        ChildProcess.make({
-          ...commandOutputOptions(verbose),
-        })`sips -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
-      );
-    }
-
-    yield* runCommand(
-      ChildProcess.make({
-        ...commandOutputOptions(verbose),
-      })`iconutil -c icns ${iconsetDir} -o ${targetIcns}`,
-    );
-  });
-}
-
-function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: boolean) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    if (!(yield* fs.exists(sourcePng))) {
-      return yield* new BuildScriptError({
-        message: `Desktop macOS icon source is missing at ${sourcePng}`,
-      });
-    }
-
-    const tmpRoot = yield* fs.makeTempDirectoryScoped({
-      prefix: "t3code-icon-build-",
-    });
-
-    const iconPngPath = path.join(stageResourcesDir, "icon.png");
-    const iconIcnsPath = path.join(stageResourcesDir, "icon.icns");
-
-    yield* runCommand(
-      ChildProcess.make({
-        ...commandOutputOptions(verbose),
-      })`sips -z 512 512 ${sourcePng} --out ${iconPngPath}`,
-    );
-
-    yield* generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose);
-  });
-}
-
-function stageLinuxIcons(stageResourcesDir: string, sourcePng: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    if (!(yield* fs.exists(sourcePng))) {
-      return yield* new BuildScriptError({
-        message: `Desktop Linux icon source is missing at ${sourcePng}`,
-      });
-    }
-
-    const iconPath = path.join(stageResourcesDir, "icon.png");
-    yield* fs.copyFile(sourcePng, iconPath);
-  });
-}
-
-function stageWindowsIcons(stageResourcesDir: string, sourceIco: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    if (!(yield* fs.exists(sourceIco))) {
-      return yield* new BuildScriptError({
-        message: `Desktop Windows icon source is missing at ${sourceIco}`,
-      });
-    }
-
-    const iconPath = path.join(stageResourcesDir, "icon.ico");
-    yield* fs.copyFile(sourceIco, iconPath);
-  });
-}
-
-function validateBundledClientAssets(clientDir: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const indexPath = path.join(clientDir, "index.html");
-    const indexHtml = yield* fs.readFileString(indexPath);
-    const refs = [...indexHtml.matchAll(/\b(?:src|href)=["']([^"']+)["']/g)]
-      .map((match) => match[1])
-      .filter((value): value is string => value !== undefined);
-    const missing: string[] = [];
-
-    for (const ref of refs) {
-      const normalizedRef = ref.split("#")[0]?.split("?")[0] ?? "";
-      if (!normalizedRef) continue;
-      if (normalizedRef.startsWith("http://") || normalizedRef.startsWith("https://")) continue;
-      if (normalizedRef.startsWith("data:") || normalizedRef.startsWith("mailto:")) continue;
-
-      const ext = path.extname(normalizedRef);
-      if (!ext) continue;
-
-      const relativePath = normalizedRef.replace(/^\/+/, "");
-      const assetPath = path.join(clientDir, relativePath);
-      if (!(yield* fs.exists(assetPath))) {
-        missing.push(normalizedRef);
-      }
-    }
-
-    if (missing.length > 0) {
-      const preview = missing.slice(0, 6).join(", ");
-      const suffix = missing.length > 6 ? ` (+${missing.length - 6} more)` : "";
-      return yield* new BuildScriptError({
-        message: `Bundled client references missing files in ${indexPath}: ${preview}${suffix}. Rebuild web/server artifacts.`,
-      });
-    }
-  });
-}
-
-function resolveDesktopRuntimeDependencies(
-  dependencies: Record<string, string> | undefined,
-  catalog: Record<string, string>,
-): Record<string, string> {
-  if (!dependencies || Object.keys(dependencies).length === 0) {
-    return {};
-  }
-
-  const runtimeDependencies = Object.fromEntries(
-    Object.entries(dependencies).filter(([dependencyName]) => dependencyName !== "electron"),
-  );
-
-  return resolveCatalogDependencies(runtimeDependencies, catalog, "apps/desktop");
-}
-
-function resolveGitHubPublishConfig(updateChannel: "latest" | "nightly"):
-  | {
-      readonly provider: "github";
-      readonly owner: string;
-      readonly repo: string;
-      readonly releaseType: "release" | "prerelease";
-      readonly channel?: "nightly";
-    }
-  | undefined {
-  const rawRepo =
-    process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
-    process.env.GITHUB_REPOSITORY?.trim() ||
-    "";
-  if (!rawRepo) return undefined;
-
-  const [owner, repo, ...rest] = rawRepo.split("/");
-  if (!owner || !repo || rest.length > 0) return undefined;
-
-  return {
-    provider: "github",
-    owner,
-    repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
-    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
-  };
+  return endpoints;
 }
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
+}
+
+export function resolveDesktopProductName(version: string): string {
+  return resolveDesktopUpdateChannel(version) === "nightly"
+    ? "T3 Code (Nightly)"
+    : (desktopPackageJson.productName ?? "T3 Code");
 }
 
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
@@ -548,103 +209,331 @@ export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIcon
   };
 }
 
-export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefined): string {
-  return `http://localhost:${mockUpdateServerPort ?? 3000}`;
+export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
+  return resolveDesktopUpdateChannel(version) === "nightly" ? "nightly" : "production";
 }
 
-export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+function resolveUpdaterOs(platform: typeof BuildPlatform.Type): string {
+  switch (platform) {
+    case "mac":
+      return "darwin";
+    case "linux":
+      return "linux";
+    case "win":
+      return "windows";
+  }
 }
 
-const createBuildConfig = Effect.fn("createBuildConfig")(function* (
-  platform: typeof BuildPlatform.Type,
-  target: string,
-  version: string,
-  signed: boolean,
-  mockUpdates: boolean,
-  mockUpdateServerPort: number | undefined,
+function resolveUpdaterArch(arch: typeof BuildArch.Type): string {
+  switch (arch) {
+    case "arm64":
+      return "aarch64";
+    case "x64":
+      return "x86_64";
+    case "universal":
+      return "universal";
+  }
+}
+
+function resolveUpdaterInstaller(target: string): string {
+  switch (target.toLowerCase()) {
+    case "app":
+    case "dmg":
+      return "app";
+    case "appimage":
+      return "appimage";
+    case "deb":
+      return "deb";
+    case "msi":
+      return "msi";
+    case "nsis":
+      return "nsis";
+    case "rpm":
+      return "rpm";
+    default:
+      return target.toLowerCase();
+  }
+}
+
+function resolveUpdaterTargetKey(
+  options: Pick<ResolvedBuildOptions, "arch" | "platform"> & {
+    readonly target: string;
+  },
 ) {
-  const buildConfig: Record<string, unknown> = {
-    appId: "com.t3tools.t3code",
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
-    directories: {
-      buildResources: "apps/desktop/resources",
-    },
-  };
-  const updateChannel = resolveDesktopUpdateChannel(version);
-  const publishConfig = resolveGitHubPublishConfig(updateChannel);
-  if (publishConfig) {
-    buildConfig.publish = [publishConfig];
-  } else if (mockUpdates) {
-    buildConfig.publish = [
-      {
-        provider: "generic",
-        url: resolveMockUpdateServerUrl(mockUpdateServerPort),
-      },
-    ];
-  }
+  return `${resolveUpdaterOs(options.platform)}-${resolveUpdaterArch(options.arch)}-${resolveUpdaterInstaller(options.target)}`;
+}
 
-  if (platform === "mac") {
-    buildConfig.mac = {
-      target: target === "dmg" ? [target, "zip"] : [target],
-      icon: "icon.icns",
-      category: "public.app-category.developer-tools",
-    };
-  }
+function endpointDirectoryUrl(endpoint: string): URL {
+  const url = new URL(endpoint);
+  const pathname = url.pathname;
+  url.pathname = pathname.endsWith("/") ? pathname : pathname.replace(/\/[^/]*$/, "/");
+  url.search = "";
+  url.hash = "";
+  return url;
+}
 
-  if (platform === "linux") {
-    buildConfig.linux = {
-      target: [target],
-      executableName: "t3code",
-      icon: "icon.png",
-      category: "Development",
-      desktop: {
-        entry: {
-          StartupWMClass: "t3code",
-        },
-      },
-    };
-  }
-
-  if (platform === "win") {
-    buildConfig.npmRebuild = false;
-    const winConfig: Record<string, unknown> = {
-      target: [target],
-      icon: "icon.ico",
-    };
-    if (signed) {
-      winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
-    } else {
-      winConfig.signAndEditExecutable = false;
+function resolveUpdaterAssetBaseUrl(options: ResolvedBuildOptions): URL | undefined {
+  const configuredBaseUrl = process.env.T3CODE_TAURI_UPDATER_ASSET_BASE_URL?.trim();
+  if (configuredBaseUrl) {
+    const url = new URL(configuredBaseUrl);
+    if (!url.pathname.endsWith("/")) {
+      url.pathname = `${url.pathname}/`;
     }
-    buildConfig.win = winConfig;
+    return url;
   }
 
-  return buildConfig;
+  const firstEndpoint = options.updaterEndpoints[0];
+  return firstEndpoint ? endpointDirectoryUrl(firstEndpoint) : undefined;
+}
+
+function makeUpdaterAssetUrl(baseUrl: URL, fileName: string): string {
+  return new URL(fileName, baseUrl).toString();
+}
+
+export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
+  input: BuildCliInput,
+) {
+  const path = yield* Path.Path;
+  const repoRoot = yield* RepoRoot;
+  const env = yield* BuildEnvConfig.asEffect();
+  const platform = mergeOptions(
+    input.platform,
+    env.platform,
+    detectHostBuildPlatform(process.platform),
+  );
+
+  if (!platform) {
+    return yield* new BuildScriptError({
+      message: `Unsupported host platform '${process.platform}'.`,
+    });
+  }
+
+  const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
+  const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
+  const version = mergeOptions(input.buildVersion, env.version, undefined);
+  const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
+  const outputDir = path.resolve(
+    repoRoot,
+    mergeOptions(input.outputDir, env.outputDir, mockUpdates ? "release-mock" : "release"),
+  );
+  const mockUpdateServerPort =
+    Option.getOrUndefined(input.mockUpdateServerPort) ??
+    (yield* resolveMockUpdateServerPort(Option.getOrUndefined(env.mockUpdateServerPort)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new BuildScriptError({
+            message: "Invalid mock update server port.",
+            cause,
+          }),
+      ),
+    ));
+  const updaterPubkey =
+    Option.getOrUndefined(env.updaterPubkey) ?? Option.getOrUndefined(env.updaterFallbackPubkey);
+  const updaterEndpoints = resolveUpdaterEndpointConfig({
+    configuredEndpoints: Option.getOrUndefined(env.updaterEndpoints),
+    mockUpdates,
+    mockUpdateServerPort,
+  });
+
+  return {
+    platform,
+    target,
+    arch,
+    version,
+    outputDir,
+    skipBuild: resolveBooleanFlag(input.skipBuild, env.skipBuild),
+    keepStage: resolveBooleanFlag(input.keepStage, env.keepStage),
+    signed: resolveBooleanFlag(input.signed, env.signed),
+    verbose: resolveBooleanFlag(input.verbose, env.verbose),
+    mockUpdates,
+    mockUpdateServerPort,
+    updaterPubkey,
+    updaterEndpoints,
+    createUpdaterArtifacts:
+      env.createUpdaterArtifacts ||
+      Boolean(
+        process.env.TAURI_SIGNING_PRIVATE_KEY && updaterPubkey && updaterEndpoints.length > 0,
+      ),
+  } satisfies ResolvedBuildOptions;
 });
 
-const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
-  platform: typeof BuildPlatform.Type,
-  stageResourcesDir: string,
-  iconAssets: DesktopBuildIconAssets,
-  verbose: boolean,
-) {
-  if (platform === "mac") {
-    yield* stageMacIcons(stageResourcesDir, iconAssets.macIconPng, verbose);
-    return;
+const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Command) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const child = yield* spawner.spawn(command);
+  const exitCode = yield* child.exitCode;
+  if (exitCode !== 0) {
+    return yield* new BuildScriptError({
+      message: `Command exited with non-zero exit code (${exitCode})`,
+    });
   }
+});
 
-  if (platform === "linux") {
-    yield* stageLinuxIcons(stageResourcesDir, iconAssets.linuxIconPng);
-    return;
-  }
-
+function resolveRustTarget(platform: typeof BuildPlatform.Type, arch: typeof BuildArch.Type) {
   if (platform === "win") {
-    yield* stageWindowsIcons(stageResourcesDir, iconAssets.windowsIconIco);
+    return arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
   }
+  if (platform === "mac") {
+    if (arch === "universal") return "universal-apple-darwin";
+    return arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+  }
+  return arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
+}
+
+function resolveTauriBundleDir(input: {
+  readonly desktopDir: string;
+  readonly target: string;
+  readonly rustTarget: string | undefined;
+}) {
+  const targetRoot = input.rustTarget
+    ? `${input.desktopDir}/src-tauri/target/${input.rustTarget}/release`
+    : `${input.desktopDir}/src-tauri/target/release`;
+  return `${targetRoot}/bundle/${input.target}`;
+}
+
+function resolveBundledNodeRuntimePath(input: {
+  readonly desktopDir: string;
+  readonly platform: typeof BuildPlatform.Type;
+}) {
+  return NodePath.join(
+    input.desktopDir,
+    "dist",
+    "node",
+    input.platform === "win" ? "node.exe" : "node",
+  );
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const parent = NodePath.resolve(parentPath);
+  const child = NodePath.resolve(childPath);
+  const relative = NodePath.relative(parent, child);
+  return relative.length > 0 && !relative.startsWith("..") && !NodePath.isAbsolute(relative);
+}
+
+function removeDirectoryInside(parentPath: string, directoryPath: string): void {
+  if (!isPathInside(parentPath, directoryPath)) {
+    throw new Error(`Refusing to remove directory outside ${parentPath}: ${directoryPath}`);
+  }
+  rmSync(directoryPath, { force: true, recursive: true });
+}
+
+function removeArtifactOutputDirectory(repoRoot: string, outputDir: string): void {
+  const relative = NodePath.relative(NodePath.resolve(repoRoot), NodePath.resolve(outputDir));
+  const firstSegment = relative.split(/[\\/]/)[0] ?? "";
+  if (
+    relative.length === 0 ||
+    relative.startsWith("..") ||
+    NodePath.isAbsolute(relative) ||
+    !firstSegment.startsWith("release")
+  ) {
+    return;
+  }
+  rmSync(outputDir, { force: true, recursive: true });
+}
+
+export function createTauriConfigOverride(
+  version: string,
+  productName: string,
+  options: Pick<
+    ResolvedBuildOptions,
+    "createUpdaterArtifacts" | "mockUpdates" | "updaterEndpoints" | "updaterPubkey"
+  >,
+) {
+  const config: {
+    productName: string;
+    version: string;
+    bundle?: { createUpdaterArtifacts: boolean };
+    plugins: {
+      updater: {
+        dangerousInsecureTransportProtocol?: boolean;
+        endpoints: readonly string[];
+        pubkey: string;
+      };
+    };
+  } = {
+    productName,
+    version,
+    plugins: {
+      updater: {
+        endpoints: [],
+        pubkey: "",
+      },
+    },
+  };
+
+  if (options.createUpdaterArtifacts) {
+    config.bundle = { createUpdaterArtifacts: true };
+  }
+
+  if (options.updaterPubkey && options.updaterEndpoints.length > 0) {
+    config.plugins.updater = {
+      pubkey: options.updaterPubkey,
+      endpoints: options.updaterEndpoints,
+      ...(options.mockUpdates ? { dangerousInsecureTransportProtocol: true } : {}),
+    };
+  }
+
+  return config;
+}
+
+const writeTauriUpdateManifest = Effect.fn("writeTauriUpdateManifest")(function* (input: {
+  readonly appVersion: string;
+  readonly copiedArtifacts: ReadonlyArray<string>;
+  readonly options: ResolvedBuildOptions;
+  readonly productName: string;
+}) {
+  if (!input.options.createUpdaterArtifacts) {
+    return;
+  }
+
+  if (input.options.arch === "universal") {
+    return yield* new BuildScriptError({
+      message: "Tauri updater manifests require a concrete architecture, not universal.",
+    });
+  }
+
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const signaturePath = input.copiedArtifacts.find((artifact) => artifact.endsWith(".sig"));
+  if (!signaturePath) {
+    return yield* new BuildScriptError({
+      message: "Tauri updater artifacts were requested, but no .sig file was produced.",
+    });
+  }
+
+  const artifactPath = signaturePath.slice(0, -".sig".length);
+  if (!input.copiedArtifacts.includes(artifactPath) && !(yield* fs.exists(artifactPath))) {
+    return yield* new BuildScriptError({
+      message: `Tauri updater signature has no matching artifact: ${signaturePath}`,
+    });
+  }
+
+  const assetBaseUrl = resolveUpdaterAssetBaseUrl(input.options);
+  if (!assetBaseUrl) {
+    return yield* new BuildScriptError({
+      message:
+        "Tauri updater artifacts were produced, but no updater endpoint or T3CODE_TAURI_UPDATER_ASSET_BASE_URL was configured.",
+    });
+  }
+
+  const manifestStem = resolveDesktopUpdateChannel(input.appVersion);
+  const targetKey = resolveUpdaterTargetKey(input.options);
+  const artifactFileName = path.basename(artifactPath);
+  const signature = readFileSync(signaturePath, "utf8").trim();
+  const manifestPath = path.join(input.options.outputDir, `${manifestStem}-${targetKey}.json`);
+  const manifest = {
+    version: input.appVersion,
+    notes: `${input.productName} ${input.appVersion}`,
+    pub_date: new Date().toISOString(),
+    platforms: {
+      [targetKey]: {
+        signature,
+        url: makeUpdaterAssetUrl(assetBaseUrl, artifactFileName),
+      },
+    },
+  };
+
+  yield* fs.writeFileString(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  yield* Effect.log(`[desktop-artifact] Wrote Tauri updater manifest: ${manifestPath}`);
 });
 
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
@@ -653,236 +542,148 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-
-  const platformConfig = PLATFORM_CONFIG[options.platform];
-  if (!platformConfig) {
-    return yield* new BuildScriptError({
-      message: `Unsupported platform '${options.platform}'.`,
-    });
-  }
-
-  const electronVersion = desktopPackageJson.dependencies.electron;
-
-  const serverDependencies = serverPackageJson.dependencies;
-  if (!serverDependencies || Object.keys(serverDependencies).length === 0) {
-    return yield* new BuildScriptError({
-      message: "Could not resolve production dependencies from apps/server/package.json.",
-    });
-  }
-
-  const resolvedOverrides = yield* Effect.try({
-    try: () =>
-      resolveCatalogDependencies(
-        rootPackageJson.overrides,
-        rootPackageJson.workspaces.catalog,
-        "apps/desktop",
-      ),
-    catch: (cause) =>
-      new BuildScriptError({
-        message: "Could not resolve overrides from package.json.",
-        cause,
-      }),
-  });
-
-  const resolvedServerDependencies = yield* Effect.try({
-    try: () =>
-      resolveCatalogDependencies(
-        serverDependencies,
-        rootPackageJson.workspaces.catalog,
-        "apps/server",
-      ),
-    catch: (cause) =>
-      new BuildScriptError({
-        message: "Could not resolve production dependencies from apps/server/package.json.",
-        cause,
-      }),
-  });
-  const resolvedDesktopRuntimeDependencies = yield* Effect.try({
-    try: () =>
-      resolveDesktopRuntimeDependencies(
-        desktopPackageJson.dependencies,
-        rootPackageJson.workspaces.catalog,
-      ),
-    catch: (cause) =>
-      new BuildScriptError({
-        message: "Could not resolve desktop runtime dependencies from apps/desktop/package.json.",
-        cause,
-      }),
-  });
-
   const appVersion = options.version ?? serverPackageJson.version;
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
-  const commitHash = yield* resolveGitCommitHash(repoRoot);
-  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
-  const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
-  });
+  const desktopDir = path.join(repoRoot, "apps/desktop");
+  const tauriDir = path.join(desktopDir, "src-tauri");
+  const target = options.target.toLowerCase();
+  const rustTarget = resolveRustTarget(options.platform, options.arch);
+  const bundleDir = resolveTauriBundleDir({ desktopDir, target, rustTarget });
+  const bunExecutable = resolveBunExecutable();
 
-  const stageAppDir = path.join(stageRoot, "app");
-  const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
-  const distDirs = {
-    desktopDist: path.join(repoRoot, "apps/desktop/dist-electron"),
-    desktopResources: path.join(repoRoot, "apps/desktop/resources"),
-    serverDist: path.join(repoRoot, "apps/server/dist"),
-  };
-  const bundledClientEntry = path.join(distDirs.serverDist, "client/index.html");
+  if (options.updaterEndpoints.length > 0 && !options.updaterPubkey) {
+    return yield* new BuildScriptError({
+      message: "Tauri updater endpoints were configured, but no updater public key was provided.",
+    });
+  }
+
+  if (options.createUpdaterArtifacts && options.updaterEndpoints.length === 0) {
+    return yield* new BuildScriptError({
+      message: "Tauri updater artifacts were requested, but no updater endpoint was configured.",
+    });
+  }
+
+  if (!PLATFORM_CONFIG[options.platform].bundleChoices.includes(target)) {
+    return yield* new BuildScriptError({
+      message: `Unsupported Tauri bundle target '${options.target}' for ${options.platform}.`,
+    });
+  }
 
   if (!options.skipBuild) {
-    yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
+    yield* Effect.log("[desktop-artifact] Building web, server, and Tauri shell artifacts...");
     yield* runCommand(
-      ChildProcess.make({
+      ChildProcess.make(bunExecutable, ["run", "build:desktop"], {
         cwd: repoRoot,
-        ...commandOutputOptions(options.verbose),
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-        shell: process.platform === "win32",
-      })`bun run build:desktop`,
+        stderr: "inherit",
+        stdout: options.verbose ? "inherit" : "ignore",
+      }),
     );
   }
 
-  for (const [label, dir] of Object.entries(distDirs)) {
-    if (!(yield* fs.exists(dir))) {
+  const serverEntry = path.join(repoRoot, "apps/server/dist/bin.mjs");
+  const clientEntry = path.join(repoRoot, "apps/server/dist/client/index.html");
+  const claudeCliEntry = path.join(repoRoot, "apps/server/dist/cli.js");
+  const nodePtyEntry = path.join(repoRoot, "apps/server/dist/node_modules/node-pty/package.json");
+  const sshHelperEntry = path.join(repoRoot, "apps/desktop/dist/ssh-helper.mjs");
+  const nodeRuntimeEntry = resolveBundledNodeRuntimePath({
+    desktopDir,
+    platform: options.platform,
+  });
+  for (const required of [
+    serverEntry,
+    clientEntry,
+    claudeCliEntry,
+    nodePtyEntry,
+    sshHelperEntry,
+    nodeRuntimeEntry,
+  ]) {
+    if (!(yield* fs.exists(required))) {
       return yield* new BuildScriptError({
-        message: `Missing ${label} at ${dir}. Run 'bun run build:desktop' first.`,
+        message: `Missing desktop runtime asset at ${required}. Run 'bun run build:desktop' first.`,
       });
     }
   }
 
-  if (!(yield* fs.exists(bundledClientEntry))) {
-    return yield* new BuildScriptError({
-      message: `Missing bundled server client at ${bundledClientEntry}. Run 'bun run build:desktop' first.`,
-    });
-  }
-
-  yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
-
-  yield* fs.makeDirectory(path.join(stageAppDir, "apps/desktop"), { recursive: true });
-  yield* fs.makeDirectory(path.join(stageAppDir, "apps/server"), { recursive: true });
-
-  yield* Effect.log("[desktop-artifact] Staging release app...");
-  yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
-  yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
-  yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
-
-  yield* assertPlatformBuildResources(
-    options.platform,
-    stageResourcesDir,
-    {
-      macIconPng: path.join(repoRoot, iconAssets.macIconPng),
-      linuxIconPng: path.join(repoRoot, iconAssets.linuxIconPng),
-      windowsIconIco: path.join(repoRoot, iconAssets.windowsIconIco),
-    },
-    options.verbose,
+  const configOverride = JSON.stringify(
+    createTauriConfigOverride(appVersion, resolveDesktopProductName(appVersion), options),
   );
-
-  // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
-  yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
-
-  const stagePackageJson: StagePackageJson = {
-    name: "t3code",
-    version: appVersion,
-    buildVersion: appVersion,
-    t3codeCommitHash: commitHash,
-    private: true,
-    description: "T3 Code desktop build",
-    author: "T3 Tools",
-    main: "apps/desktop/dist-electron/main.cjs",
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-    ),
-    dependencies: {
-      ...resolvedServerDependencies,
-      ...resolvedDesktopRuntimeDependencies,
-    },
-    devDependencies: {
-      electron: electronVersion,
-    },
-    overrides: resolvedOverrides,
-  };
-
-  const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
-  yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
-
-  yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
-  yield* runCommand(
-    ChildProcess.make({
-      cwd: stageAppDir,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-      shell: process.platform === "win32",
-    })`bun install --production --omit optional`,
+  const configOverrideDir = path.join(tauriDir, "target");
+  const configOverridePath = path.join(
+    configOverrideDir,
+    `t3code-tauri-config-${process.pid}.json`,
   );
+  yield* fs.makeDirectory(configOverrideDir, { recursive: true });
+  yield* fs.writeFileString(configOverridePath, configOverride);
 
-  const buildEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-  };
-  for (const [key, value] of Object.entries(buildEnv)) {
-    if (value === "") {
-      delete buildEnv[key];
-    }
-  }
-  if (!options.signed) {
-    buildEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
-    delete buildEnv.CSC_LINK;
-    delete buildEnv.CSC_KEY_PASSWORD;
-    delete buildEnv.APPLE_API_KEY;
-    delete buildEnv.APPLE_API_KEY_ID;
-    delete buildEnv.APPLE_API_ISSUER;
-  }
+  const args = [
+    "x",
+    "tauri",
+    "build",
+    "--bundles",
+    target,
+    "--target",
+    rustTarget,
+    "--config",
+    configOverridePath,
+    "--ci",
+    ...(options.signed || options.createUpdaterArtifacts ? [] : ["--no-sign"]),
+  ];
 
-  if (process.platform === "win32") {
-    const python = yield* resolvePythonForNodeGyp();
-    if (python) {
-      buildEnv.PYTHON = python;
-      buildEnv.npm_config_python = python;
-    }
-    buildEnv.npm_config_msvs_version = buildEnv.npm_config_msvs_version ?? "2022";
-    buildEnv.GYP_MSVS_VERSION = buildEnv.GYP_MSVS_VERSION ?? "2022";
-  }
+  yield* Effect.try({
+    try: () => {
+      removeDirectoryInside(path.join(tauriDir, "target"), bundleDir);
+      removeArtifactOutputDirectory(repoRoot, options.outputDir);
+    },
+    catch: (cause) =>
+      new BuildScriptError({
+        message: "Could not clean stale desktop build artifacts before packaging.",
+        cause,
+      }),
+  });
 
   yield* Effect.log(
-    `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
+    `[desktop-artifact] Building Tauri ${options.platform}/${target} (arch=${options.arch}, version=${appVersion})...`,
   );
   yield* runCommand(
-    ChildProcess.make({
-      cwd: stageAppDir,
-      env: buildEnv,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
-    })`bun x --install=fallback electron-builder ${platformConfig.cliFlag} --${options.arch} --publish never`,
+    ChildProcess.make(bunExecutable, args, {
+      cwd: desktopDir,
+      stderr: "inherit",
+      stdout: options.verbose ? "inherit" : "ignore",
+    }),
   );
 
-  const stageDistDir = path.join(stageAppDir, "dist");
-  if (!(yield* fs.exists(stageDistDir))) {
+  if (!(yield* fs.exists(bundleDir))) {
     return yield* new BuildScriptError({
-      message: `Build completed but dist directory was not found at ${stageDistDir}`,
+      message: `Tauri build completed but bundle directory was not found at ${bundleDir}`,
     });
   }
 
-  const stageEntries = yield* fs.readDirectory(stageDistDir);
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
-
+  const entries = yield* fs.readDirectory(bundleDir);
   const copiedArtifacts: string[] = [];
-  for (const entry of stageEntries) {
-    const from = path.join(stageDistDir, entry);
+  for (const entry of entries) {
+    const from = path.join(bundleDir, entry);
     const stat = yield* fs.stat(from).pipe(Effect.catch(() => Effect.succeed(null)));
-    if (!stat || stat.type !== "File") continue;
-
+    if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
     const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
+    if (stat.type === "Directory") {
+      yield* fs.copy(from, to);
+    } else {
+      yield* fs.copyFile(from, to);
+    }
     copiedArtifacts.push(to);
   }
 
   if (copiedArtifacts.length === 0) {
     return yield* new BuildScriptError({
-      message: `Build completed but no files were produced in ${stageDistDir}`,
+      message: `Tauri build completed but no artifacts were produced in ${bundleDir}`,
     });
   }
+  yield* writeTauriUpdateManifest({
+    appVersion,
+    copiedArtifacts,
+    options,
+    productName: resolveDesktopProductName(appVersion),
+  });
 
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),
@@ -895,13 +696,11 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
   target: Flag.string("target").pipe(
-    Flag.withDescription(
-      "Artifact target, for example dmg/AppImage/nsis (env: T3CODE_DESKTOP_TARGET).",
-    ),
+    Flag.withDescription("Bundle target, for example nsis/msi/dmg/appimage."),
     Flag.optional,
   ),
   arch: Flag.choice("arch", BuildArch.literals).pipe(
-    Flag.withDescription("Build arch, for example arm64/x64/universal (env: T3CODE_DESKTOP_ARCH)."),
+    Flag.withDescription("Build arch, for example arm64/x64/universal."),
     Flag.optional,
   ),
   buildVersion: Flag.string("build-version").pipe(
@@ -913,27 +712,23 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
   skipBuild: Flag.boolean("skip-build").pipe(
-    Flag.withDescription(
-      "Skip `bun run build:desktop` and use existing dist artifacts (env: T3CODE_DESKTOP_SKIP_BUILD).",
-    ),
+    Flag.withDescription("Skip `bun run build:desktop` and use existing dist artifacts."),
     Flag.optional,
   ),
   keepStage: Flag.boolean("keep-stage").pipe(
-    Flag.withDescription("Keep temporary staging files (env: T3CODE_DESKTOP_KEEP_STAGE)."),
+    Flag.withDescription("Compatibility flag retained for older release workflows."),
     Flag.optional,
   ),
   signed: Flag.boolean("signed").pipe(
-    Flag.withDescription(
-      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: T3CODE_DESKTOP_SIGNED).",
-    ),
+    Flag.withDescription("Allow platform signing instead of passing Tauri --no-sign."),
     Flag.optional,
   ),
   verbose: Flag.boolean("verbose").pipe(
-    Flag.withDescription("Stream subprocess stdout (env: T3CODE_DESKTOP_VERBOSE)."),
+    Flag.withDescription("Stream subprocess stdout."),
     Flag.optional,
   ),
   mockUpdates: Flag.boolean("mock-updates").pipe(
-    Flag.withDescription("Enable mock updates (env: T3CODE_DESKTOP_MOCK_UPDATES)."),
+    Flag.withDescription("Use release-mock as the default output directory."),
     Flag.optional,
   ),
   mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
@@ -942,7 +737,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a Tauri desktop artifact for T3 Code."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

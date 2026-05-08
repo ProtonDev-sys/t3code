@@ -27,6 +27,20 @@ const runNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
 ): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(NodeServices.layer)));
 
+const isWindows = process.platform === "win32";
+
+function shellEnvExports(extraEnv?: Record<string, string>) {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .join("\n");
+}
+
+function cmdEnvSets(extraEnv?: Record<string, string>) {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `set "${key}=${value}"`)
+    .join("\r\n");
+}
+
 const resolveMockAgentPath = Effect.fn("resolveMockAgentPath")(function* () {
   const path = yield* Path.Path;
   return yield* path.fromFileUrl(new URL("../../../scripts/acp-mock-agent.ts", import.meta.url));
@@ -67,12 +81,13 @@ const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
+  const wrapperPath = path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  const script = isWindows
+    ? ["@echo off", "setlocal", cmdEnvSets(extraEnv), `bun ${JSON.stringify(mockAgentPath)} %*`]
+        .filter(Boolean)
+        .join("\r\n")
+    : `#!/bin/sh
+${shellEnvExports(extraEnv)}
 exec ${JSON.stringify("bun")} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   yield* fileSystem.writeFileString(wrapperPath, script);
@@ -88,8 +103,18 @@ const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-about-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const script = `#!/bin/sh
+  const wrapperPath = path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  const script = isWindows
+    ? [
+        "@echo off",
+        'if "%~1"=="about" (',
+        "  echo CLI Version         2026.04.09-f2b0fcd",
+        "  echo User Email          cursor@example.com",
+        "  exit /b 0",
+        ")",
+        `bun ${JSON.stringify(mockAgentPath)} %*`,
+      ].join("\r\n")
+    : `#!/bin/sh
 if [ "$1" = "about" ]; then
   printf 'CLI Version         2026.04.09-f2b0fcd\\n'
   printf 'User Email          cursor@example.com\\n'
@@ -561,6 +586,10 @@ describe("discoverCursorModelsViaAcp", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
     );
 
+    if (isWindows) {
+      return;
+    }
+
     const exitLog = await runNode(waitForFileContent(exitLogPath));
     expect(exitLog).toContain("SIGTERM");
   });
@@ -601,6 +630,10 @@ describe("discoverCursorModelCapabilitiesViaAcp", () => {
       "gpt-5.4",
       "claude-opus-4-6",
     ]);
+
+    if (isWindows) {
+      return;
+    }
 
     const exitLog = await runNode(waitForFileContent(exitLogPath));
     expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(4);

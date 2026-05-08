@@ -1,5 +1,6 @@
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
+import type { ProviderTokenUsageTotals } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 
 function formatPercentage(value: number | null): string | null {
@@ -12,13 +13,31 @@ function formatPercentage(value: number | null): string | null {
   return `${Math.round(value)}%`;
 }
 
-export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
-  const { usage } = props;
+function formatUsageCost(value: number): string {
+  if (value <= 0) {
+    return "Unavailable";
+  }
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value < 0.01 ? 4 : 2,
+    maximumFractionDigits: value < 0.01 ? 4 : 2,
+  }).format(value);
+}
+
+export function ContextWindowMeter(props: {
+  usage: ContextWindowSnapshot;
+  tokenUsage?: ProviderTokenUsageTotals | null;
+}) {
+  const { tokenUsage, usage } = props;
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (normalizedPercentage / 100) * circumference;
+  const cachedInputTokens =
+    (tokenUsage?.cachedInputTokens ?? 0) + (tokenUsage?.cacheCreationInputTokens ?? 0);
+  const outputTokens = (tokenUsage?.outputTokens ?? 0) + (tokenUsage?.reasoningOutputTokens ?? 0);
 
   return (
     <Popover>
@@ -105,6 +124,28 @@ export function ContextWindowMeter(props: { usage: ContextWindowSnapshot }) {
           {usage.compactsAutomatically ? (
             <div className="text-xs text-muted-foreground">
               Automatically compacts its context when needed.
+            </div>
+          ) : null}
+          {tokenUsage ? (
+            <div className="mt-2 border-t border-border/60 pt-2">
+              <div className="whitespace-nowrap text-xs font-medium text-foreground">
+                {tokenUsage.estimatedCostUsd > 0
+                  ? `Estimated token cost: ${formatUsageCost(tokenUsage.estimatedCostUsd)}`
+                  : "Token cost estimate unavailable"}
+              </div>
+              <div className="mt-1 whitespace-nowrap text-xs text-muted-foreground">
+                In {formatContextWindowTokens(tokenUsage.inputTokens)}
+                <span className="mx-1">⋅</span>
+                Cached {formatContextWindowTokens(cachedInputTokens)}
+                <span className="mx-1">⋅</span>
+                Out {formatContextWindowTokens(outputTokens)}
+              </div>
+              {tokenUsage.estimatedCostUsd > 0 ? (
+                <div className="mt-1 max-w-72 text-xs text-muted-foreground">
+                  Estimate uses known API token rates and excludes account, tool, regional, batch,
+                  and subscription adjustments.
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

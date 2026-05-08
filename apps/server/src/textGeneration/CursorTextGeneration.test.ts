@@ -17,9 +17,25 @@ import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../scripts/acp-mock-agent.ts");
+const isWindows = process.platform === "win32";
 
 function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function cmdEnvSet(key: string, value: string): string {
+  return `set "${key}=${value}"`;
+}
+
+function normalizeWrapperEnv(env: Record<string, string>): Record<string, string> {
+  if (!isWindows || env.T3_ACP_PROMPT_RESPONSE_TEXT === undefined) {
+    return env;
+  }
+  const { T3_ACP_PROMPT_RESPONSE_TEXT: promptResponseText, ...rest } = env;
+  return {
+    ...rest,
+    T3_ACP_PROMPT_RESPONSE_TEXT_B64: Buffer.from(promptResponseText, "utf8").toString("base64"),
+  };
 }
 
 const CursorTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
@@ -28,22 +44,34 @@ const CursorTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
   const binDir = path.join(dir, "bin");
-  const agentPath = path.join(binDir, "agent");
+  const agentPath = path.join(binDir, isWindows ? "agent.cmd" : "agent");
+  const wrapperEnv = normalizeWrapperEnv(env);
   mkdirSync(binDir, { recursive: true });
-  writeFileSync(
-    agentPath,
-    [
-      "#!/bin/sh",
-      ...Object.entries(env).map(([key, value]) => `export ${key}=${shellSingleQuote(value)}`),
-      'if [ "$1" != "acp" ]; then',
-      '  printf "%s\\n" "unexpected args: $*" >&2',
-      "  exit 11",
-      "fi",
-      `exec bun ${JSON.stringify(mockAgentPath)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
+  const script = isWindows
+    ? [
+        "@echo off",
+        "setlocal",
+        ...Object.entries(wrapperEnv).map(([key, value]) => cmdEnvSet(key, value)),
+        'if not "%~1"=="acp" (',
+        "  echo unexpected args: %* 1>&2",
+        "  exit /b 11",
+        ")",
+        `bun ${JSON.stringify(mockAgentPath)} %*`,
+        "",
+      ].join("\r\n")
+    : [
+        "#!/bin/sh",
+        ...Object.entries(wrapperEnv).map(
+          ([key, value]) => `export ${key}=${shellSingleQuote(value)}`,
+        ),
+        'if [ "$1" != "acp" ]; then',
+        '  printf "%s\\n" "unexpected args: $*" >&2',
+        "  exit 11",
+        "fi",
+        `exec bun ${JSON.stringify(mockAgentPath)} "$@"`,
+        "",
+      ].join("\n");
+  writeFileSync(agentPath, script, "utf8");
   chmodSync(agentPath, 0o755);
   return agentPath;
 }
@@ -253,6 +281,10 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
           });
 
           expect(generated.subject).toBe("Close runtime after generation");
+
+          if (isWindows) {
+            return;
+          }
 
           const exitLog = yield* waitForFileContent(exitLogPath);
           expect(exitLog).toContain("exit:0");

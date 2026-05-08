@@ -11,6 +11,8 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
+  applyCodexGoalToPrompt,
+  buildCodexGoalStartPrompt,
   buildTurnStartParams,
   isRecoverableThreadResumeError,
   openCodexThread,
@@ -147,6 +149,44 @@ describe("buildTurnStartParams", () => {
   });
 });
 
+describe("applyCodexGoalToPrompt", () => {
+  it("injects active goal context before the user request", () => {
+    assert.equal(
+      applyCodexGoalToPrompt("Fix the search lag", {
+        objective: "Keep slash commands visible and routed",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      "Current long-running goal:\nKeep slash commands visible and routed\n\nUser request:\nFix the search lag",
+    );
+  });
+
+  it("does not inject paused goals", () => {
+    assert.equal(
+      applyCodexGoalToPrompt("Fix the search lag", {
+        objective: "Keep slash commands visible and routed",
+        status: "paused",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      "Fix the search lag",
+    );
+  });
+
+  it("builds an executable goal-start prompt for /goal", () => {
+    assert.equal(
+      buildCodexGoalStartPrompt({
+        objective: "Keep slash commands visible and routed",
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+      "Current long-running goal:\nKeep slash commands visible and routed\n\nUser request:\nStart working toward this goal now.",
+    );
+  });
+});
+
 describe("isRecoverableThreadResumeError", () => {
   it("matches missing thread errors", () => {
     assert.equal(
@@ -224,6 +264,8 @@ describe("openCodexThread", () => {
         cwd: "/tmp/project",
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
+        modelContextWindow: undefined,
+        mcpEnabled: true,
         resumeThreadId: "stale-thread",
       }),
     );
@@ -233,6 +275,49 @@ describe("openCodexThread", () => {
       calls.map((call) => call.method),
       ["thread/resume", "thread/start"],
     );
+  });
+
+  it("passes context window overrides through thread config", async () => {
+    const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push({ method, payload });
+        return Effect.succeed(
+          makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.5",
+        serviceTier: undefined,
+        modelContextWindow: 400_000,
+        mcpEnabled: false,
+        resumeThreadId: undefined,
+      }),
+    );
+
+    assert.deepStrictEqual(calls[0], {
+      method: "thread/start",
+      payload: {
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        config: {
+          mcp_servers: {},
+          model_context_window: 400_000,
+        },
+        model: "gpt-5.5",
+      },
+    });
   });
 
   it("propagates non-recoverable resume failures", async () => {
@@ -264,6 +349,8 @@ describe("openCodexThread", () => {
           cwd: "/tmp/project",
           requestedModel: "gpt-5.3-codex",
           serviceTier: undefined,
+          modelContextWindow: undefined,
+          mcpEnabled: true,
           resumeThreadId: "stale-thread",
         }),
       ),

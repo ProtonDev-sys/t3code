@@ -90,6 +90,7 @@ function runGit(cwd: string, args: ReadonlyArray<string>) {
 
 const initializeGitWorkspace = Effect.fn(function* (cwd: string) {
   runGit(cwd, ["init", "--initial-branch=main"]);
+  runGit(cwd, ["config", "core.autocrlf", "false"]);
   runGit(cwd, ["config", "user.email", "test@example.com"]);
   runGit(cwd, ["config", "user.name", "Test User"]);
   const fileSystem = yield* FileSystem.FileSystem;

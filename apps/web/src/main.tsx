@@ -4,19 +4,20 @@ import { RouterProvider } from "@tanstack/react-router";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
 import "@xterm/xterm/css/xterm.css";
+import "./tauriBridge";
 import "./index.css";
 
-import { isElectron } from "./env";
+import { isDesktopShell } from "./env";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
 import { syncDocumentWindowControlsOverlayClass } from "./lib/windowControlsOverlay";
 
-// Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
-const history = isElectron ? createHashHistory() : createBrowserHistory();
+// The desktop shell may load a non-browser URL, so hash history avoids path resolution issues.
+const history = isDesktopShell ? createHashHistory() : createBrowserHistory();
 
 const router = getRouter(history);
 
-if (isElectron) {
+if (isDesktopShell) {
   syncDocumentWindowControlsOverlayClass();
 }
 

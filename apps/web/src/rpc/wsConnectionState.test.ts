@@ -63,6 +63,20 @@ describe("wsConnectionState", () => {
     });
   });
 
+  it("keeps the UI connected while a replacement websocket is being opened", () => {
+    recordWsConnectionAttempt("ws://localhost:3020/ws");
+    recordWsConnectionOpened();
+    recordWsConnectionAttempt("ws://localhost:3020/ws");
+
+    expect(getWsConnectionStatus()).toMatchObject({
+      hasConnected: true,
+      phase: "connected",
+      reconnectAttemptCount: 1,
+      reconnectPhase: "attempting",
+    });
+    expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("connected");
+  });
+
   it("adds a version mismatch hint to websocket errors when metadata includes one", () => {
     recordWsConnectionAttempt("ws://localhost:3020/ws", {
       connectionLabel: "Remote Mac",

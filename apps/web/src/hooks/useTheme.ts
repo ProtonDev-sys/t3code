@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-type Theme = "light" | "dark" | "system";
+type Theme = "light" | "dark" | "system" | "blurple-twilight";
 type ThemeSnapshot = {
   theme: Theme;
   systemDark: boolean;
@@ -34,7 +34,9 @@ function getSystemDark() {
 function getStored(): Theme {
   if (!hasThemeStorage()) return DEFAULT_THEME_SNAPSHOT.theme;
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw === "light" || raw === "dark" || raw === "system") return raw;
+  if (raw === "light" || raw === "dark" || raw === "system" || raw === "blurple-twilight") {
+    return raw;
+  }
   return DEFAULT_THEME_SNAPSHOT.theme;
 }
 
@@ -92,8 +94,15 @@ function applyTheme(theme: Theme, suppressTransitions = false) {
   if (suppressTransitions) {
     document.documentElement.classList.add("no-transitions");
   }
-  const isDark = theme === "dark" || (theme === "system" && getSystemDark());
+  const isDark =
+    theme === "dark" || theme === "blurple-twilight" || (theme === "system" && getSystemDark());
   document.documentElement.classList.toggle("dark", isDark);
+  document.documentElement.classList.toggle("theme-blurple-twilight", theme === "blurple-twilight");
+  if (typeof document.documentElement.setAttribute === "function") {
+    document.documentElement.setAttribute("data-theme", theme);
+  } else if (document.documentElement.dataset) {
+    document.documentElement.dataset.theme = theme;
+  }
   syncBrowserChromeTheme();
   syncDesktopTheme(theme);
   if (suppressTransitions) {
@@ -176,7 +185,13 @@ export function useTheme() {
   const theme = snapshot.theme;
 
   const resolvedTheme: "light" | "dark" =
-    theme === "system" ? (snapshot.systemDark ? "dark" : "light") : theme;
+    theme === "system"
+      ? snapshot.systemDark
+        ? "dark"
+        : "light"
+      : theme === "light"
+        ? "light"
+        : "dark";
 
   const setTheme = useCallback((next: Theme) => {
     if (!hasThemeStorage()) return;

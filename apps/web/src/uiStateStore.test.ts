@@ -29,6 +29,26 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   };
 }
 
+function createLocalStorageStub(): Storage {
+  const store = new Map<string, string>();
+  return {
+    clear: () => {
+      store.clear();
+    },
+    getItem: (key) => store.get(key) ?? null,
+    key: (index) => [...store.keys()][index] ?? null,
+    get length() {
+      return store.size;
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    setItem: (key, value) => {
+      store.set(key, value);
+    },
+  };
+}
+
 describe("uiStateStore pure functions", () => {
   it("markThreadVisited stores the provided server timestamp", () => {
     const threadId = ThreadId.make("thread-1");
@@ -300,7 +320,7 @@ describe("uiStateStore pure functions", () => {
       { key: physicalRemote, logicalKey, cwd: "/repo/project" },
     ]);
 
-    expect(initial.projectExpandedById).toEqual({ [logicalKey]: true });
+    expect(initial.projectExpandedById).toEqual({ [logicalKey]: false });
 
     const afterCollapse = { ...initial, projectExpandedById: { [logicalKey]: false } };
     const next = syncProjects(afterCollapse, [
@@ -323,17 +343,17 @@ describe("uiStateStore pure functions", () => {
       { key: physicalKey, logicalKey: previousLogicalKey, cwd: "/repo/project" },
     ]);
 
-    expect(initial.projectExpandedById[previousLogicalKey]).toBe(true);
+    expect(initial.projectExpandedById[previousLogicalKey]).toBe(false);
 
-    const afterCollapse = {
+    const afterExpand = {
       ...initial,
-      projectExpandedById: { [previousLogicalKey]: false },
+      projectExpandedById: { [previousLogicalKey]: true },
     };
-    const next = syncProjects(afterCollapse, [
+    const next = syncProjects(afterExpand, [
       { key: physicalKey, logicalKey: nextLogicalKey, cwd: "/repo/project" },
     ]);
 
-    expect(next.projectExpandedById[nextLogicalKey]).toBe(false);
+    expect(next.projectExpandedById[nextLogicalKey]).toBe(true);
   });
 
   it("syncThreads prunes missing thread UI state", () => {
@@ -446,26 +466,6 @@ describe("uiStateStore pure functions", () => {
 });
 
 describe("uiStateStore persistence round-trip", () => {
-  function createLocalStorageStub(): Storage {
-    const store = new Map<string, string>();
-    return {
-      clear: () => {
-        store.clear();
-      },
-      getItem: (key) => store.get(key) ?? null,
-      key: (index) => [...store.keys()][index] ?? null,
-      get length() {
-        return store.size;
-      },
-      removeItem: (key) => {
-        store.delete(key);
-      },
-      setItem: (key, value) => {
-        store.set(key, value);
-      },
-    };
-  }
-
   let localStorageStub: Storage;
 
   beforeEach(() => {
@@ -504,12 +504,13 @@ describe("uiStateStore persistence round-trip", () => {
     });
   });
 
-  it("respects mixed expand state on rehydrate and defaults new projects to expanded", () => {
+  it("starts all projects collapsed on rehydrate and defaults new projects to collapsed", () => {
     const projectA = { key: "kA", logicalKey: "kA", cwd: "/projA" };
     const projectB = { key: "kB", logicalKey: "kB", cwd: "/projB" };
     const projectC = { key: "kC", logicalKey: "kC", cwd: "/projC" };
 
     let state = syncProjects(makeUiState(), [projectA, projectB]);
+    state = setProjectExpanded(state, projectA.key, true);
     state = setProjectExpanded(state, projectB.key, false);
     persistState(state);
 
@@ -520,16 +521,15 @@ describe("uiStateStore persistence round-trip", () => {
     const rehydrated = syncProjects(makeUiState(), [projectA, projectB, projectC]);
 
     expect(rehydrated.projectExpandedById).toEqual({
-      [projectA.key]: true,
+      [projectA.key]: false,
       [projectB.key]: false,
-      [projectC.key]: true,
+      [projectC.key]: false,
     });
   });
 
-  it("preserves legacy not-in-expanded-list = collapsed for one upgrade session", () => {
-    // Pre-fix shape only stored expandedProjectCwds. Absence of
-    // collapsedProjectCwds opts the session into the legacy fallback so
-    // upgrade users do not see previously collapsed rows pop open.
+  it("ignores legacy expanded project lists on startup", () => {
+    // Startup should be deterministic even when an older build persisted only
+    // the rows that were expanded.
     hydratePersistedProjectState({
       expandedProjectCwds: ["/projA"],
     });
@@ -540,7 +540,7 @@ describe("uiStateStore persistence round-trip", () => {
     ]);
 
     expect(rehydrated.projectExpandedById).toEqual({
-      kA: true,
+      kA: false,
       kB: false,
     });
   });
@@ -579,12 +579,9 @@ describe("uiStateStore persistence round-trip", () => {
     expect(persisted.defaultAdvertisedEndpointKey).toBe("desktop-core:lan:http");
   });
 
-  it("preserves expand state across restart when project's logical key changes", () => {
-    // After restart, in-memory previousExpandedById is empty, so the
-    // previousLogicalKey-to-state bridge in syncProjects cannot help. The
-    // persisted-cwd fallback is the only mechanism that can carry collapse
-    // state across a restart that also flips a project into a new logical
-    // group (e.g. late-arriving repo metadata). This locks in that path.
+  it("starts collapsed across restart when project's logical key changes", () => {
+    // Saved expansion state is ignored on startup, including when later
+    // metadata flips a project into a new logical group.
     const physicalKey = "env-local:/lk-restart-proj";
     const previousLogicalKey = physicalKey;
     const cwd = "/lk-restart-proj";

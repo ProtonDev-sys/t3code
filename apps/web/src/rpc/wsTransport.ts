@@ -38,6 +38,8 @@ const NOOP: () => void = () => undefined;
 interface TransportSession {
   readonly clientPromise: Promise<WsRpcProtocolClient>;
   readonly clientScope: Scope.Closeable;
+  readonly id: number;
+  readonly openedPromise: Promise<void>;
   readonly runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>;
 }
 
@@ -64,6 +66,7 @@ export class WsTransport {
   private nextSessionId = 0;
   private activeSessionId = 0;
   private session: TransportSession;
+  private readonly warmSwapPreviousSessions = new Set<TransportSession>();
   private lastHeartbeatPongAt = 0;
   private readonly streamRequestStartListeners = new Set<(info: StreamRequestStartInfo) => void>();
 
@@ -211,8 +214,32 @@ export class WsTransport {
       clearAllTrackedRpcRequests();
       this.lastHeartbeatPongAt = 0;
       const previousSession = this.session;
-      this.session = this.createSession();
-      await this.closeSession(previousSession);
+      const nextSession = this.createSession();
+      this.session = nextSession;
+      this.warmSwapPreviousSessions.add(previousSession);
+      void Promise.all([nextSession.clientPromise, nextSession.openedPromise]).then(
+        () => {
+          if (this.disposed || this.session !== nextSession) {
+            void this.closeSession(nextSession);
+            this.warmSwapPreviousSessions.delete(previousSession);
+            return;
+          }
+          void this.closeSession(previousSession).finally(() => {
+            this.warmSwapPreviousSessions.delete(previousSession);
+          });
+        },
+        (error) => {
+          if (!this.disposed && this.session === nextSession) {
+            this.activeSessionId = previousSession.id;
+            this.session = previousSession;
+          }
+          this.warmSwapPreviousSessions.delete(previousSession);
+          void this.closeSession(nextSession);
+          console.warn("WebSocket reconnect warmup failed", {
+            error: formatErrorMessage(error),
+          });
+        },
+      );
     });
 
     this.reconnectChain = reconnectOperation.catch(() => undefined);
@@ -228,7 +255,11 @@ export class WsTransport {
       return;
     }
     this.disposed = true;
-    await this.closeSession(this.session);
+    await Promise.all([
+      this.closeSession(this.session),
+      ...Array.from(this.warmSwapPreviousSessions, (session) => this.closeSession(session)),
+    ]);
+    this.warmSwapPreviousSessions.clear();
   }
 
   private closeSession(session: TransportSession) {
@@ -239,10 +270,16 @@ export class WsTransport {
     });
   }
 
-  private createSession(): TransportSession {
+  private createSession(options?: { readonly activateImmediately?: boolean }): TransportSession {
     const sessionId = this.nextSessionId + 1;
     this.nextSessionId = sessionId;
-    this.activeSessionId = sessionId;
+    if (options?.activateImmediately !== false) {
+      this.activeSessionId = sessionId;
+    }
+    let resolveOpened!: () => void;
+    const openedPromise = new Promise<void>((resolve) => {
+      resolveOpened = resolve;
+    });
     const runtime = ManagedRuntime.make(
       Layer.mergeAll(
         createWsRpcProtocolLayer(this.url, {
@@ -255,6 +292,10 @@ export class WsTransport {
           onHeartbeatPong: () => {
             this.lastHeartbeatPongAt = Date.now();
             this.lifecycleHandlers?.onHeartbeatPong?.();
+          },
+          onOpen: () => {
+            resolveOpened();
+            this.lifecycleHandlers?.onOpen?.();
           },
           onRequestStart: (info) => {
             this.lifecycleHandlers?.onRequestStart?.(info);
@@ -271,8 +312,10 @@ export class WsTransport {
     );
     const clientScope = runtime.runSync(Scope.make());
     return {
+      id: sessionId,
       runtime,
       clientScope,
+      openedPromise,
       clientPromise: runtime.runPromise(Scope.provide(clientScope)(makeWsRpcProtocolClient)),
     };
   }

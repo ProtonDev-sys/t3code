@@ -30,18 +30,40 @@ class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const bunExe = "bun";
+const isWindows = process.platform === "win32";
+
+function shellEnvExports(extraEnv?: Record<string, string>) {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .join("\n");
+}
+
+function cmdEnvSets(extraEnv?: Record<string, string>) {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `set "${key}=${value}"`)
+    .join("\r\n");
+}
 
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
+  const wrapperPath = path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  const script = isWindows
+    ? [
+        "@echo off",
+        "setlocal",
+        cmdEnvSets(extraEnv),
+        options?.initialDelaySeconds
+          ? `timeout /t ${Math.trunc(options.initialDelaySeconds)} /nobreak >nul`
+          : "",
+        `${bunExe} ${JSON.stringify(mockAgentPath)} %*`,
+      ]
+        .filter(Boolean)
+        .join("\r\n")
+    : `#!/bin/sh
+${shellEnvExports(extraEnv)}
 ${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
 exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
@@ -56,15 +78,21 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-printf '%s\t' "$@" >> ${JSON.stringify(argvLogPath)}
-printf '\n' >> ${JSON.stringify(argvLogPath)}
-export T3_ACP_REQUEST_LOG_PATH=${JSON.stringify(requestLogPath)}
-${envExports}
+  const wrapperPath = path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+  const env = {
+    T3_ACP_ARGV_LOG_PATH: argvLogPath,
+    T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+    ...extraEnv,
+  };
+  const script = isWindows
+    ? [
+        "@echo off",
+        "setlocal",
+        cmdEnvSets(env),
+        `${bunExe} ${JSON.stringify(mockAgentPath)} %*`,
+      ].join("\r\n")
+    : `#!/bin/sh
+${shellEnvExports(env)}
 exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   await writeFile(wrapperPath, script, "utf8");
@@ -217,6 +245,11 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         ]);
       }
 
+      const sessions = yield* adapter.listSessions();
+      const activeSession = sessions.find((entry) => entry.threadId === threadId);
+      assert.equal(activeSession?.status, "ready");
+      assert.equal(activeSession?.activeTurnId, undefined);
+
       yield* adapter.stopSession(threadId);
     }),
   );
@@ -247,6 +280,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       });
 
       yield* adapter.stopSession(threadId);
+      if (isWindows) {
+        assert.isFalse(yield* adapter.hasSession(threadId));
+        return;
+      }
 
       const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
       assert.include(exitLog, "SIGTERM");
@@ -299,6 +336,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         assert.equal(secondSession.threadId, threadId);
 
         yield* adapter.stopSession(threadId);
+        if (isWindows) {
+          assert.isFalse(yield* adapter.hasSession(threadId));
+          return;
+        }
 
         const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
         assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);

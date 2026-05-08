@@ -1,6 +1,17 @@
 import { assert, it, describe } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Deferred, Effect, Exit, FileSystem, Layer, Option, Path, Scope, Stream } from "effect";
+import {
+  Deferred,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Scope,
+  Stream,
+  type PlatformError,
+} from "effect";
 import type {
   VcsStatusLocalResult,
   VcsStatusRemoteResult,
@@ -30,6 +41,19 @@ const baseRemoteStatus: VcsStatusRemoteResult = {
   aheadCount: 0,
   behindCount: 0,
   pr: null,
+};
+
+const deniedSymlinkErrorCodes = new Set(["EACCES", "EPERM", "ENOTSUP"]);
+
+const getNodeErrorCode = (cause: unknown): unknown =>
+  typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+
+const isDeniedSymlinkError = (error: PlatformError.PlatformError): boolean => {
+  const code = getNodeErrorCode(error.reason.cause);
+  return (
+    deniedSymlinkErrorCodes.has(String(code)) &&
+    (error.reason._tag === "PermissionDenied" || error.reason._tag === "Unknown")
+  );
 };
 
 const baseStatus: VcsStatusResult = {
@@ -221,7 +245,11 @@ describe("VcsStatusBroadcaster", () => {
         prefix: "t3-vcs-status-link-",
       });
       const linkDir = path.join(linkParent, "repo-link");
-      yield* fileSystem.symlink(realDir, linkDir);
+      const symlinkResult = yield* fileSystem.symlink(realDir, linkDir).pipe(Effect.result);
+      if (symlinkResult._tag === "Failure") {
+        if (isDeniedSymlinkError(symlinkResult.failure)) return;
+        return yield* symlinkResult.failure;
+      }
       const realPath = yield* fileSystem.realPath(realDir);
 
       const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;

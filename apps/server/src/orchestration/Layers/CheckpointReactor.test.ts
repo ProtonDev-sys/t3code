@@ -109,6 +109,8 @@ function createProviderServiceHarness(
         driverKind: ProviderDriverKind.make(providerName),
         displayName: undefined,
         enabled: true,
+        mcpEnabled: true,
+        customAgents: [],
         continuationIdentity: {
           driverKind: ProviderDriverKind.make(providerName),
           continuationKey: `${providerName}:instance:${instanceId}`,
@@ -193,6 +195,7 @@ function runGit(cwd: string, args: ReadonlyArray<string>) {
 function createGitRepository() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-checkpoint-handler-"));
   runGit(cwd, ["init", "--initial-branch=main"]);
+  runGit(cwd, ["config", "core.autocrlf", "false"]);
   runGit(cwd, ["config", "user.email", "test@example.com"]);
   runGit(cwd, ["config", "user.name", "Test User"]);
   fs.writeFileSync(path.join(cwd, "README.md"), "v1\n", "utf8");

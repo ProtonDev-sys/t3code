@@ -5,6 +5,9 @@ export type DesktopUpdateButtonAction = "download" | "install" | "none";
 export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
+  if (state.status === "installing") {
+    return "none";
+  }
   if (state.downloadedVersion) {
     return "install";
   }
@@ -26,6 +29,9 @@ export function shouldShowDesktopUpdateButton(state: DesktopUpdateState | null):
   if (state.status === "downloading") {
     return true;
   }
+  if (state.status === "installing") {
+    return true;
+  }
   return resolveDesktopUpdateButtonAction(state) !== "none";
 }
 
@@ -34,7 +40,7 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return state?.status === "downloading";
+  return state?.status === "downloading" || state?.status === "installing";
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -60,6 +66,9 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     const progress =
       typeof state.downloadPercent === "number" ? ` (${Math.floor(state.downloadPercent)}%)` : "";
     return `Downloading update${progress}`;
+  }
+  if (state.status === "installing") {
+    return "Installing update and restarting";
   }
   if (state.status === "downloaded") {
     return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. Click to restart and install.`;
@@ -104,6 +113,7 @@ export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   return (
     state.status !== "checking" &&
     state.status !== "downloading" &&
+    state.status !== "installing" &&
     state.status !== "downloaded" &&
     state.status !== "disabled"
   );

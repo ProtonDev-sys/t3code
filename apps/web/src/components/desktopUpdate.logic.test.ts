@@ -104,6 +104,20 @@ describe("desktop update button state", () => {
     expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
     expect(getDesktopUpdateButtonTooltip(state)).toContain("42%");
   });
+
+  it("shows a disabled installing state without offering another action", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "installing",
+      availableVersion: "1.1.0",
+      downloadedVersion: "1.1.0",
+    };
+
+    expect(shouldShowDesktopUpdateButton(state)).toBe(true);
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("none");
+    expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
+    expect(getDesktopUpdateButtonTooltip(state)).toBe("Installing update and restarting");
+  });
 });
 
 describe("getDesktopUpdateActionError", () => {
@@ -243,6 +257,10 @@ describe("canCheckForUpdate", () => {
     expect(canCheckForUpdate({ ...baseState, status: "downloading", downloadPercent: 50 })).toBe(
       false,
     );
+  });
+
+  it("returns false while installing", () => {
+    expect(canCheckForUpdate({ ...baseState, status: "installing" })).toBe(false);
   });
 
   it("returns false once an update has been downloaded", () => {

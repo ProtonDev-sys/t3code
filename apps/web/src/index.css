@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark, .dark *));
-/* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
+/* Window Controls Overlay: active when the desktop shell exposes titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
 
 @theme inline {
@@ -142,6 +142,36 @@
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
   }
+}
+
+:root.theme-blurple-twilight {
+  color-scheme: dark;
+  --background: #101125;
+  --app-chrome-background: #0c0d1d;
+  --foreground: #f2f3ff;
+  --card: #171832;
+  --card-foreground: #f2f3ff;
+  --popover: #1b1d3a;
+  --popover-foreground: #f2f3ff;
+  --primary: #5865f2;
+  --primary-foreground: #ffffff;
+  --secondary: color-mix(in srgb, #5865f2 14%, transparent);
+  --secondary-foreground: #f2f3ff;
+  --muted: color-mix(in srgb, #5865f2 10%, transparent);
+  --muted-foreground: color-mix(in srgb, #c7c9ff 72%, #0c0d1d);
+  --accent: color-mix(in srgb, #5865f2 16%, transparent);
+  --accent-foreground: #ffffff;
+  --destructive: #f87171;
+  --border: color-mix(in srgb, #c7c9ff 10%, transparent);
+  --input: color-mix(in srgb, #c7c9ff 13%, transparent);
+  --ring: #7c86ff;
+  --destructive-foreground: #fca5a5;
+  --info: #60a5fa;
+  --info-foreground: #93c5fd;
+  --success: #34d399;
+  --success-foreground: #6ee7b7;
+  --warning: #fbbf24;
+  --warning-foreground: #fde68a;
 }
 
 body {

@@ -45,6 +45,12 @@ export const PROVIDER_OPTIONS: Array<{
     available: true,
     pickerSidebarBadge: "new",
   },
+  {
+    value: ProviderDriverKind.make("copilot"),
+    label: "Copilot",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
 ];
 
 export interface WorkLogEntry {
@@ -142,8 +148,32 @@ export function formatElapsed(startIso: string, endIso: string | undefined): str
   return formatDuration(endedAt - startedAt);
 }
 
-type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
+type LatestTurnTiming = Pick<
+  OrchestrationLatestTurn,
+  "turnId" | "state" | "startedAt" | "completedAt"
+>;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
+
+export function isSessionActivelyRunning(
+  latestTurn: LatestTurnTiming | null,
+  session: SessionActivityState | null,
+): boolean {
+  if (
+    latestTurn?.state === "running" &&
+    !latestTurn.completedAt &&
+    session?.orchestrationStatus !== "stopped" &&
+    session?.orchestrationStatus !== "error"
+  ) {
+    return true;
+  }
+
+  if (session?.orchestrationStatus !== "running") return false;
+
+  const activeTurnId = session.activeTurnId ?? null;
+  if (!latestTurn) return true;
+  if (activeTurnId !== null && activeTurnId !== latestTurn.turnId) return true;
+  return !latestTurn.completedAt;
+}
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
@@ -151,9 +181,7 @@ export function isLatestTurnSettled(
 ): boolean {
   if (!latestTurn?.startedAt) return false;
   if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.orchestrationStatus === "running") return false;
-  return true;
+  return !isSessionActivelyRunning(latestTurn, session);
 }
 
 export function deriveActiveWorkStartedAt(
@@ -161,10 +189,12 @@ export function deriveActiveWorkStartedAt(
   session: SessionActivityState | null,
   sendStartedAt: string | null,
 ): string | null {
-  const runningTurnId =
-    session?.orchestrationStatus === "running" ? (session.activeTurnId ?? null) : null;
-  if (runningTurnId !== null) {
-    if (latestTurn?.turnId === runningTurnId) {
+  if (isSessionActivelyRunning(latestTurn, session)) {
+    const runningTurnId = session?.activeTurnId ?? null;
+    if (runningTurnId !== null && latestTurn?.turnId === runningTurnId) {
+      return latestTurn.startedAt ?? sendStartedAt;
+    }
+    if (runningTurnId === null && latestTurn && !latestTurn.completedAt) {
       return latestTurn.startedAt ?? sendStartedAt;
     }
     return sendStartedAt;
@@ -490,6 +520,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
+    .filter((activity) => !activity.kind.startsWith("usage."))
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .map(toDerivedWorkLogEntry);

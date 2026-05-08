@@ -1,5 +1,4 @@
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
 import {
   Outlet,
   createRootRouteWithContext,
@@ -7,11 +6,14 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useShallow } from "zustand/react/shallow";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { AppConfirmDialog } from "../components/AppConfirmDialog";
+import { CodexCliAutoUpdateCoordinator } from "../components/CodexCliAutoUpdateCoordinator";
 import { CommandPalette } from "../components/CommandPalette";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import {
@@ -28,11 +30,6 @@ import {
 } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { readLocalApi } from "../localApi";
-import { useSettings } from "../hooks/useSettings";
-import {
-  deriveLogicalProjectKeyFromSettings,
-  derivePhysicalProjectKeyFromPath,
-} from "../logicalProject";
 import {
   getServerConfigUpdatedNotification,
   ServerConfigUpdatedNotification,
@@ -41,8 +38,7 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
-import { useStore } from "../store";
-import { useUiStateStore } from "../uiStateStore";
+import { selectThreadShellsAcrossEnvironments, useStore } from "../store";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
   ensureEnvironmentConnectionBootstrapped,
@@ -52,6 +48,7 @@ import {
   startEnvironmentConnectionService,
   useSavedEnvironmentRegistryStore,
 } from "../environments/runtime";
+import { prewarmThreadDetailSubscriptions } from "../environments/runtime/service";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
   ensurePrimaryEnvironmentReady,
@@ -60,6 +57,16 @@ import {
   updatePrimaryEnvironmentDescriptor,
 } from "../environments/primary";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
+import { selectProviderUsageActivities } from "../hooks/useCodexUsage";
+import { useProviderStatisticsCachedActivities } from "../hooks/useProviderStatisticsCache";
+import {
+  getProviderStatisticsCacheHighWaterMark,
+  readCachedProviderStatisticsActivities,
+} from "../lib/providerStatisticsCache";
+
+const STATISTICS_BACKGROUND_PREWARM_LIMIT = 24;
+const STATISTICS_BACKGROUND_FALLBACK_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -103,6 +110,10 @@ function RootRouteView() {
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
   useEffect(() => {
+    document.documentElement.dataset.t3CodeRouteRendered = "true";
+  }, []);
+
+  useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       syncBrowserChromeTheme();
     });
@@ -133,6 +144,9 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
+        {primaryEnvironmentAuthenticated ? <ProviderStatisticsCacheBootstrap /> : null}
+        {primaryEnvironmentAuthenticated ? <CodexCliAutoUpdateCoordinator /> : null}
+        <AppConfirmDialog />
         <SshPasswordPromptDialog />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
@@ -275,14 +289,56 @@ function EnvironmentConnectionManagerBootstrap() {
   return null;
 }
 
+function parseThreadTimeMs(thread: {
+  readonly updatedAt?: string | undefined;
+  readonly createdAt: string;
+}) {
+  const updatedAt = thread.updatedAt ? Date.parse(thread.updatedAt) : Number.NaN;
+  if (Number.isFinite(updatedAt)) {
+    return updatedAt;
+  }
+  const createdAt = Date.parse(thread.createdAt);
+  return Number.isFinite(createdAt) ? createdAt : null;
+}
+
+function ProviderStatisticsCacheBootstrap() {
+  const liveActivities = useStore(useShallow(selectProviderUsageActivities));
+  const cachedActivities = useProviderStatisticsCachedActivities(liveActivities);
+  const threads = useStore(useShallow(selectThreadShellsAcrossEnvironments));
+  const refs = useMemo(() => {
+    const cachedHighWaterMark =
+      getProviderStatisticsCacheHighWaterMark(cachedActivities) ??
+      getProviderStatisticsCacheHighWaterMark(readCachedProviderStatisticsActivities());
+    const startMs =
+      cachedHighWaterMark ?? Date.now() - STATISTICS_BACKGROUND_FALLBACK_DAYS * DAY_MS;
+    return threads
+      .flatMap((thread) => {
+        const threadTimeMs = parseThreadTimeMs(thread);
+        if (threadTimeMs === null || threadTimeMs < startMs) {
+          return [];
+        }
+        return [{ environmentId: thread.environmentId, threadId: thread.id, threadTimeMs }];
+      })
+      .toSorted((left, right) => right.threadTimeMs - left.threadTimeMs)
+      .slice(0, STATISTICS_BACKGROUND_PREWARM_LIMIT)
+      .map(({ environmentId, threadId }) => ({ environmentId, threadId }));
+  }, [cachedActivities, threads]);
+
+  useEffect(() => {
+    return prewarmThreadDetailSubscriptions(refs, {
+      initialDelayMs: 8_000,
+      intervalMs: 750,
+      retainMs: 5_000,
+    });
+  }, [refs]);
+
+  return null;
+}
+
 function EventRouter() {
   const setActiveEnvironmentId = useStore((store) => store.setActiveEnvironmentId);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
-  const projectGroupingSettings = useSettings((settings) => ({
-    sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
-    sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
-  }));
   const readPathname = useEffectEvent(() => pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
   const seenServerConfigUpdateIdRef = useRef(getServerConfigUpdatedNotification()?.id ?? 0);
@@ -303,22 +359,6 @@ function EventRouter() {
       if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
         return;
       }
-      const bootstrapEnvironmentState =
-        useStore.getState().environmentStateById[payload.environment.environmentId];
-      const bootstrapProject =
-        bootstrapEnvironmentState?.projectById[payload.bootstrapProjectId] ?? null;
-      const bootstrapProjectKey =
-        (bootstrapProject
-          ? deriveLogicalProjectKeyFromSettings(bootstrapProject, projectGroupingSettings)
-          : null) ??
-        (serverConfig?.cwd
-          ? derivePhysicalProjectKeyFromPath(payload.environment.environmentId, serverConfig.cwd)
-          : null) ??
-        scopedProjectKey(
-          scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
-        );
-      useUiStateStore.getState().setProjectExpanded(bootstrapProjectKey, true);
-
       if (readPathname() !== "/") {
         return;
       }

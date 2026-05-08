@@ -1,24 +1,21 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "private": true,
   "type": "module",
-  "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "bun run --parallel dev:bundle dev:electron",
-    "dev:bundle": "tsdown --watch",
-    "dev:electron": "node scripts/dev-electron.mjs",
-    "build": "tsdown",
-    "start": "node scripts/start-electron.mjs",
+    "dev": "bun run build:helper && tauri dev",
+    "build": "bun run build:helper && bun run build:runtime && tauri build --no-bundle",
+    "build:helper": "tsdown",
+    "build:runtime": "node scripts/copy-node-runtime.mjs",
+    "start": "bun run build:helper && tauri dev --no-watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "smoke-test": "bun run build:helper && bun run build:runtime && tauri build --debug --no-bundle && node scripts/smoke-startup.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "effect": "catalog:",
-    "electron": "40.9.3",
-    "electron-updater": "^6.6.2"
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@t3tools/client-runtime": "workspace:*",
@@ -26,8 +23,11 @@
     "@t3tools/shared": "workspace:*",
     "@t3tools/ssh": "workspace:*",
     "@t3tools/tailscale": "workspace:*",
+    "@t3tools/web": "workspace:*",
+    "@tauri-apps/cli": "^2.11.1",
     "@types/node": "catalog:",
     "effect-acp": "workspace:*",
+    "t3": "workspace:*",
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

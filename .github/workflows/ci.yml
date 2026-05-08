@@ -69,10 +69,15 @@ jobs:
       - name: Build desktop pipeline
         run: bun run build:desktop
 
-      - name: Verify preload bundle output
+      - name: Verify Tauri desktop output
         run: |
-          test -f apps/desktop/dist-electron/preload.cjs
-          grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
+          test -f apps/server/dist/bin.mjs
+          test -f apps/server/dist/cli.js
+          test -f apps/server/dist/node_modules/node-pty/package.json
+          test -f apps/desktop/dist/node/node
+          test -f apps/desktop/dist/ssh-helper.mjs
+          grep -nE "discoverSshHosts|ensureSshEnvironment|resolveSshPasswordPrompt" apps/desktop/dist/ssh-helper.mjs
+          test -f apps/desktop/src-tauri/target/release/t3code
 
   release_smoke:
     name: Release Smoke

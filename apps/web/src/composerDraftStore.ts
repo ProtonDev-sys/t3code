@@ -91,10 +91,25 @@ const PersistedTerminalContextDraft = Schema.Struct({
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
+const PersistedComposerProviderSlashCommandDraft = Schema.Struct({
+  provider: ProviderDriverKind,
+  commandName: Schema.String,
+});
+type PersistedComposerProviderSlashCommandDraft =
+  typeof PersistedComposerProviderSlashCommandDraft.Type;
+
+export interface ComposerProviderSlashCommandDraft {
+  provider: ProviderDriverKind;
+  commandName: string;
+}
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
   terminalContexts: Schema.optionalKey(Schema.Array(PersistedTerminalContextDraft)),
+  providerSlashCommand: Schema.optionalKey(
+    Schema.NullOr(PersistedComposerProviderSlashCommandDraft),
+  ),
   // Keyed by `ProviderInstanceId` (open branded slug) so custom provider
   // instances (e.g. `codex_personal`) round-trip alongside the built-in
   // `codex` / `claudeAgent` / ... entries. Every prior `ProviderDriverKind`
@@ -215,6 +230,7 @@ export interface ComposerThreadDraftState {
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
+  providerSlashCommand?: ComposerProviderSlashCommandDraft | null;
   /**
    * Per-instance model selection. Keyed by `ProviderInstanceId` (open
    * branded slug) so a default `codex` instance and a user-authored
@@ -370,6 +386,7 @@ interface ComposerDraftStoreState {
     provider: ProviderDriverKind,
     nextProviderOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
     options?: {
+      instanceId?: ProviderInstanceId;
       model?: string | null | undefined;
       persistSticky?: boolean;
     },
@@ -381,6 +398,10 @@ interface ComposerDraftStoreState {
   setInteractionMode: (
     threadRef: ComposerThreadTarget,
     interactionMode: ProviderInteractionMode | null | undefined,
+  ) => void;
+  setProviderSlashCommand: (
+    threadRef: ComposerThreadTarget,
+    command: ComposerProviderSlashCommandDraft | null | undefined,
   ) => void;
   addImage: (threadRef: ComposerThreadTarget, image: ComposerImageAttachment) => void;
   addImages: (threadRef: ComposerThreadTarget, images: ComposerImageAttachment[]) => void;
@@ -484,6 +505,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
+  providerSlashCommand: null,
   modelSelectionByProvider: EMPTY_MODEL_SELECTION_BY_PROVIDER,
   activeProvider: null,
   runtimeMode: null,
@@ -497,6 +519,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
+    providerSlashCommand: null,
     modelSelectionByProvider: {},
     activeProvider: null,
     runtimeMode: null,
@@ -567,6 +590,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.images.length === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
+    draft.providerSlashCommand == null &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
@@ -576,6 +600,29 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
 
 function normalizeProviderDriverKind(value: unknown): ProviderDriverKind | null {
   return Schema.is(ProviderDriverKind)(value) ? value : null;
+}
+
+function normalizeComposerProviderSlashCommandDraft(
+  value: unknown,
+): ComposerProviderSlashCommandDraft | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Partial<ComposerProviderSlashCommandDraft>;
+  const provider = normalizeProviderDriverKind(candidate.provider);
+  const commandName =
+    typeof candidate.commandName === "string" ? candidate.commandName.trim().toLowerCase() : "";
+  if (!provider || commandName.length === 0) {
+    return null;
+  }
+  return { provider, commandName };
+}
+
+function areComposerProviderSlashCommandDraftsEqual(
+  left: ComposerProviderSlashCommandDraft | null | undefined,
+  right: ComposerProviderSlashCommandDraft | null | undefined,
+): boolean {
+  return left?.provider === right?.provider && left?.commandName === right?.commandName;
 }
 
 /**
@@ -1481,6 +1528,9 @@ function normalizePersistedDraftsByThreadId(
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
         : null;
+    const providerSlashCommand = normalizeComposerProviderSlashCommandDraft(
+      draftCandidate.providerSlashCommand,
+    );
     const prompt = ensureInlineTerminalContextPlaceholders(
       promptCandidate,
       terminalContexts.length,
@@ -1537,6 +1587,7 @@ function normalizePersistedDraftsByThreadId(
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
       terminalContexts.length === 0 &&
+      providerSlashCommand === null &&
       !hasModelData &&
       !runtimeMode &&
       !interactionMode
@@ -1559,6 +1610,7 @@ function normalizePersistedDraftsByThreadId(
       prompt,
       attachments,
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
+      ...(providerSlashCommand ? { providerSlashCommand } : {}),
       ...(hasModelData
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
@@ -1637,10 +1689,14 @@ function partializeComposerDraftStoreState(
     }
     const hasModelData =
       Object.keys(draft.modelSelectionByProvider).length > 0 || draft.activeProvider !== null;
+    const providerSlashCommand = normalizeComposerProviderSlashCommandDraft(
+      draft.providerSlashCommand,
+    );
     if (
       draft.prompt.length === 0 &&
       draft.persistedAttachments.length === 0 &&
       draft.terminalContexts.length === 0 &&
+      providerSlashCommand === null &&
       !hasModelData &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
@@ -1663,6 +1719,7 @@ function partializeComposerDraftStoreState(
             })),
           }
         : {}),
+      ...(providerSlashCommand ? { providerSlashCommand } : {}),
       ...(hasModelData
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(
@@ -1896,6 +1953,9 @@ function toHydratedThreadDraft(
         ...context,
         text: "",
       })) ?? [],
+    providerSlashCommand: normalizeComposerProviderSlashCommandDraft(
+      persistedDraft.providerSlashCommand,
+    ),
     modelSelectionByProvider,
     activeProvider,
     runtimeMode: persistedDraft.runtimeMode ?? null,
@@ -2455,7 +2515,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (normalizedProvider === null) {
             return;
           }
-          const instanceKey = defaultInstanceIdForDriver(normalizedProvider);
+          const instanceKey =
+            normalizeProviderInstanceId(options?.instanceId) ??
+            defaultInstanceIdForDriver(normalizedProvider);
           const fallbackModel =
             normalizeModelSlug(options?.model, normalizedProvider) ??
             DEFAULT_MODEL_BY_PROVIDER[normalizedProvider] ??
@@ -2580,6 +2642,36 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...base,
               interactionMode: nextInteractionMode,
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setProviderSlashCommand: (threadRef, command) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          const nextCommand = normalizeComposerProviderSlashCommandDraft(command);
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey];
+            if (!existing && nextCommand === null) {
+              return state;
+            }
+            const base = existing ?? createEmptyThreadDraft();
+            if (
+              areComposerProviderSlashCommandDraftsEqual(base.providerSlashCommand, nextCommand)
+            ) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...base,
+              providerSlashCommand: nextCommand,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -2877,6 +2969,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nonPersistedImageIds: [],
               persistedAttachments: [],
               terminalContexts: [],
+              providerSlashCommand: null,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

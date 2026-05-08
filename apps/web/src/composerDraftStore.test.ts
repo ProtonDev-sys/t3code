@@ -1353,6 +1353,44 @@ describe("composerDraftStore provider-scoped option updates", () => {
     );
     expect(draft?.activeProvider).toBe("codex");
   });
+
+  it("stores option updates under the selected custom provider instance", () => {
+    const store = useComposerDraftStore.getState();
+    const customCodexInstance = ProviderInstanceId.make("codex_work");
+
+    store.setModelSelection(threadRef, createModelSelection(customCodexInstance, "gpt-5.4"));
+    store.setProviderModelOptions(
+      threadRef,
+      CODEX_DRIVER,
+      toSelections({ reasoningEffort: "high", fastMode: true }),
+      {
+        instanceId: customCodexInstance,
+        model: "gpt-5.4",
+        persistSticky: true,
+      },
+    );
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider).toMatchObject({
+      codex_work: createModelSelection(
+        customCodexInstance,
+        "gpt-5.4",
+        toSelections({ reasoningEffort: "high", fastMode: true }),
+      ),
+    });
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toBeUndefined();
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[customCodexInstance],
+    ).toEqual(
+      createModelSelection(
+        customCodexInstance,
+        "gpt-5.4",
+        toSelections({ reasoningEffort: "high", fastMode: true }),
+      ),
+    );
+    expect(useComposerDraftStore.getState().stickyActiveProvider).toBe(customCodexInstance);
+  });
 });
 
 describe("composerDraftStore runtime and interaction settings", () => {

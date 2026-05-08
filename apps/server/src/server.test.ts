@@ -11,6 +11,7 @@ import {
   KeybindingRule,
   MessageId,
   OpenError,
+  type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -72,6 +73,7 @@ import {
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import {
   ProjectionSnapshotQuery,
+  type ProjectionThreadDetailReadOptions,
   type ProjectionSnapshotQueryShape,
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -580,6 +582,7 @@ const buildAppUnderTest = (options?: {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+          getSnapshotSequence: () => Effect.succeed(0),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
@@ -2000,7 +2003,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.deepEqual(first.config.keybindings, []);
         assert.deepEqual(first.config.issues, []);
         assert.deepEqual(first.config.providers, providers);
-        assert.equal(first.config.observability.logsDirectoryPath.endsWith("/logs"), true);
+        assert.equal(
+          first.config.observability.logsDirectoryPath.replaceAll("\\", "/").endsWith("/logs"),
+          true,
+        );
         assert.equal(first.config.observability.localTracingEnabled, true);
         assert.equal(first.config.observability.otlpTracesUrl, "http://localhost:4318/v1/traces");
         assert.equal(first.config.observability.otlpTracesEnabled, true);
@@ -2068,6 +2074,63 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         payload: { providers: nextProviders },
       });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "routes websocket rpc subscribeServerConfig emits the initial provider refresh result",
+    () =>
+      Effect.gen(function* () {
+        const refreshedProviders = [
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready" as const,
+            auth: { status: "authenticated" as const },
+            checkedAt: "2026-04-11T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          },
+        ] as const;
+
+        yield* buildAppUnderTest({
+          layers: {
+            keybindings: {
+              loadConfigState: Effect.succeed({
+                keybindings: [],
+                issues: [],
+              }),
+              streamChanges: Stream.empty,
+            },
+            providerRegistry: {
+              getProviders: Effect.succeed([]),
+              refresh: () => Effect.succeed(refreshedProviders),
+              streamChanges: Stream.empty,
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const events = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+
+        const [first, second] = Array.from(events);
+        assert.equal(first?.type, "snapshot");
+        if (first?.type === "snapshot") {
+          assert.deepEqual(first.config.providers, []);
+        }
+        assert.deepEqual(second, {
+          version: 1,
+          type: "providerStatuses",
+          payload: { providers: refreshedProviders },
+        });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect(
@@ -2223,9 +2286,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectSearchEntriesError");
+      assertInclude(result.failure.message, "Workspace root does not exist:");
       assertInclude(
-        result.failure.message,
-        "Workspace root does not exist: /definitely/not/a/real/workspace/path",
+        result.failure.message.replaceAll("\\", "/"),
+        "/definitely/not/a/real/workspace/path",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -3100,6 +3164,84 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("streams only the bounded thread-detail tail on subscribeThread startup", () =>
+    Effect.gen(function* () {
+      const now = new Date().toISOString();
+      const thread = {
+        id: ThreadId.make("thread-tail"),
+        projectId: ProjectId.make("project-a"),
+        title: "Tail Thread",
+        modelSelection: defaultModelSelection,
+        interactionMode: "default" as const,
+        runtimeMode: "full-access" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        latestTurn: null,
+        messages: [
+          {
+            id: MessageId.make("message-tail"),
+            role: "assistant" as const,
+            text: "recent tail",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        session: null,
+        activities: [],
+        proposedPlans: [],
+        checkpoints: [],
+        deletedAt: null,
+      };
+      const readOptions: Array<ProjectionThreadDetailReadOptions | undefined> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(23),
+            getThreadDetailById: (_threadId, options) =>
+              Effect.sync(() => {
+                readOptions.push(options);
+                return Option.some(thread);
+              }),
+          },
+          orchestrationEngine: {
+            streamDomainEvents: Stream.empty,
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: thread.id,
+          }).pipe(Stream.runCollect),
+        ),
+      );
+
+      const [first] = Array.from(items);
+      assert.equal(items.length, 1);
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind === "snapshot") {
+        assert.equal(first.snapshot.snapshotSequence, 23);
+        assert.equal(first.snapshot.thread.id, thread.id);
+      }
+      assert.deepEqual(readOptions, [
+        {
+          messageLimit: 80,
+          proposedPlanLimit: 20,
+          activityLimit: 80,
+          checkpointLimit: 80,
+        },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc orchestration shell snapshot errors", () =>
     Effect.gen(function* () {
       const projectionError = new PersistenceSqlError({
@@ -3125,6 +3267,70 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("limits shell repository identity backfill to recently updated projects", () =>
+    Effect.gen(function* () {
+      const projects: OrchestrationProjectShell[] = Array.from({ length: 70 }, (_, index) => {
+        const timestamp = new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString();
+        return {
+          id: ProjectId.make(`project-${index}`),
+          title: `Project ${index}`,
+          workspaceRoot: `/tmp/project-${index}`,
+          repositoryIdentity: null,
+          defaultModelSelection,
+          scripts: [],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+      });
+      const resolveCalls: string[] = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 11,
+                updatedAt: projects.at(-1)?.updatedAt ?? new Date(0).toISOString(),
+                projects,
+                threads: [],
+              }),
+          },
+          orchestrationEngine: {
+            streamDomainEvents: Stream.empty,
+          },
+          repositoryIdentityResolver: {
+            resolve: (workspaceRoot) =>
+              Effect.sync(() => {
+                resolveCalls.push(workspaceRoot);
+                return {
+                  canonicalKey: `example.com/${workspaceRoot.slice("/tmp/".length)}`,
+                  locator: {
+                    source: "git-remote" as const,
+                    remoteName: "origin",
+                    remoteUrl: `git@example.com:${workspaceRoot.slice("/tmp/".length)}.git`,
+                  },
+                  rootPath: workspaceRoot,
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(Stream.runCollect),
+        ),
+      );
+      const events = Array.from(items).filter((item) => item.kind === "project-upserted");
+
+      assert.equal(resolveCalls.length, 64);
+      assert.equal(events.length, 64);
+      assert.ok(resolveCalls.includes("/tmp/project-69"));
+      assert.ok(!resolveCalls.includes("/tmp/project-0"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

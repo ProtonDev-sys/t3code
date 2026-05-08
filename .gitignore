@@ -5,6 +5,7 @@ node_modules
 *.log
 *.tsbuildinfo
 apps/*/dist
+apps/*/src-tauri/target/
 .astro
 packages/*/dist
 .env
@@ -12,8 +13,19 @@ packages/*/dist
 build/
 .logs/
 release/
+release-new/
+release-unpacked/
+release-command-routing*/
 release-mock/
+.playwright-mcp/
+.tmp/
+settings-central-search.png
 .t3
+.codex-run/
+caches/
+userdata/
+worktrees/
+/bin.mjs
 .idea/
 apps/web/.playwright
 apps/web/playwright-report

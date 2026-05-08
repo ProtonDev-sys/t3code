@@ -84,6 +84,8 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
   readonly serviceTier?: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly modelContextWindow?: number;
+  readonly mcpEnabled?: boolean;
   readonly resumeCursor?: CodexResumeCursor;
 }
 
@@ -99,6 +101,36 @@ export interface CodexSessionRuntimeSendTurnInput {
   readonly interactionMode?: ProviderInteractionMode;
 }
 
+export interface CodexSessionRuntimeSteerTurnInput {
+  readonly turnId: TurnId;
+  readonly input?: string;
+  readonly attachments?: ReadonlyArray<{
+    readonly type: "image";
+    readonly url: string;
+  }>;
+}
+
+export interface CodexSessionRuntimeReviewInput {
+  readonly instructions?: string;
+}
+
+export type CodexSessionRuntimeGoalStatus = "active" | "paused";
+
+export interface CodexSessionRuntimeGoalState {
+  readonly objective: string;
+  readonly status: CodexSessionRuntimeGoalStatus;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface CodexSessionRuntimeGoalCommandInput {
+  readonly args: string;
+}
+
+export interface CodexSessionRuntimeRenameInput {
+  readonly name: string;
+}
+
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
@@ -109,11 +141,48 @@ export interface CodexThreadSnapshot {
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
 }
 
+export function applyCodexGoalToPrompt(
+  prompt: string | undefined,
+  goal: CodexSessionRuntimeGoalState | null,
+): string | undefined {
+  const objective = goal?.objective.trim();
+  if (!objective || goal?.status !== "active") {
+    return prompt;
+  }
+  const goalContext = `Current long-running goal:\n${objective}`;
+  const trimmedPrompt = prompt?.trim();
+  if (!trimmedPrompt) {
+    return goalContext;
+  }
+  return `${goalContext}\n\nUser request:\n${prompt}`;
+}
+
+export function buildCodexGoalStartPrompt(goal: CodexSessionRuntimeGoalState): string {
+  const objective = goal.objective.trim();
+  const goalContext =
+    applyCodexGoalToPrompt(undefined, { ...goal, objective, status: "active" }) ??
+    `Current long-running goal:\n${objective}`;
+  return `${goalContext}\n\nUser request:\nStart working toward this goal now.`;
+}
+
 export interface CodexSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
+  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly steerTurn: (
+    input: CodexSessionRuntimeSteerTurnInput,
+  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly compactThread: () => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly startReview: (
+    input: CodexSessionRuntimeReviewInput,
+  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly runGoalCommand: (
+    input: CodexSessionRuntimeGoalCommandInput,
+  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly renameThread: (
+    input: CodexSessionRuntimeRenameInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -269,12 +338,19 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly modelContextWindow: number | undefined;
+  readonly mcpEnabled: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
+  const threadConfig = {
+    ...(input.mcpEnabled ? {} : { mcp_servers: {} }),
+    ...(input.modelContextWindow ? { model_context_window: input.modelContextWindow } : {}),
+  };
   return {
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
+    ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
   };
@@ -370,6 +446,38 @@ export function buildTurnStartParams(input: {
   );
 }
 
+export function buildTurnSteerParams(input: {
+  readonly threadId: string;
+  readonly expectedTurnId: TurnId;
+  readonly prompt?: string;
+  readonly attachments?: ReadonlyArray<{
+    readonly type: "image";
+    readonly url: string;
+  }>;
+}): Effect.Effect<
+  EffectCodexSchema.V2TurnSteerParams,
+  CodexErrors.CodexAppServerProtocolParseError
+> {
+  const turnInput: Array<EffectCodexSchema.V2TurnSteerParams__UserInput> = [];
+  if (input.prompt) {
+    turnInput.push({
+      type: "text",
+      text: input.prompt,
+    });
+  }
+  for (const attachment of input.attachments ?? []) {
+    turnInput.push(attachment);
+  }
+
+  return Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerParams)({
+    threadId: input.threadId,
+    expectedTurnId: input.expectedTurnId,
+    input: turnInput,
+  }).pipe(
+    Effect.mapError((error) => toProtocolParseError("Invalid turn/steer request payload", error)),
+  );
+}
+
 function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
   const line = rawLine.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
   if (!line) {
@@ -418,6 +526,8 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly modelContextWindow: number | undefined;
+  readonly mcpEnabled: boolean;
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
@@ -426,6 +536,8 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    modelContextWindow: input.modelContextWindow,
+    mcpEnabled: input.mcpEnabled,
   });
 
   if (resumeThreadId === undefined) {
@@ -737,6 +849,7 @@ export const makeCodexSessionRuntime = (
       updatedAt: new Date().toISOString(),
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
+    const goalRef = yield* Ref.make<CodexSessionRuntimeGoalState | null>(null);
     const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
@@ -756,6 +869,68 @@ export const makeCodexSessionRuntime = (
         method,
         message,
       });
+    const emitSessionEventForTurn = (method: string, message: string, turnId: TurnId) =>
+      emitEvent({
+        kind: "session",
+        threadId: options.threadId,
+        turnId,
+        method,
+        message,
+      });
+
+    const emitAccountRateLimitsSnapshot = Effect.gen(function* () {
+      const response = yield* client.request("account/rateLimits/read", undefined);
+      yield* emitEvent({
+        kind: "notification",
+        threadId: options.threadId,
+        method: "account/rateLimits/updated",
+        payload: {
+          rateLimits: response.rateLimits,
+          ...(response.rateLimitsByLimitId !== undefined
+            ? { rateLimitsByLimitId: response.rateLimitsByLimitId }
+            : {}),
+        },
+      });
+    });
+
+    const emitSyntheticCommandTurn = (providerThreadId: string, turnId: TurnId) =>
+      Effect.gen(function* () {
+        const startedAt = Math.floor(Date.now() / 1000);
+        yield* emitEvent({
+          kind: "notification",
+          threadId: options.threadId,
+          method: "turn/started",
+          turnId,
+          payload: {
+            threadId: providerThreadId,
+            turn: {
+              id: turnId,
+              items: [],
+              startedAt,
+              status: "inProgress",
+            },
+          },
+        });
+        yield* Effect.sleep("50 millis");
+        const completedAt = Math.floor(Date.now() / 1000);
+        yield* emitEvent({
+          kind: "notification",
+          threadId: options.threadId,
+          method: "turn/completed",
+          turnId,
+          payload: {
+            threadId: providerThreadId,
+            turn: {
+              id: turnId,
+              items: [],
+              startedAt,
+              completedAt,
+              durationMs: Math.max(0, (completedAt - startedAt) * 1000),
+              status: "completed",
+            },
+          },
+        });
+      }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(runtimeScope), Effect.asVoid);
 
     const settlePendingApprovals = (decision: ProviderApprovalDecision) =>
       Ref.get(pendingApprovalsRef).pipe(
@@ -826,6 +1001,15 @@ export const makeCodexSessionRuntime = (
         }
 
         yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+        const currentSession = yield* Ref.get(sessionRef);
+        const payloadWithRuntimeContext =
+          payload !== undefined &&
+          typeof payload === "object" &&
+          payload !== null &&
+          notification.method === "turn/started" &&
+          currentSession.model
+            ? { ...(payload as Record<string, unknown>), model: currentSession.model }
+            : payload;
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,
@@ -837,72 +1021,101 @@ export const makeCodexSessionRuntime = (
           ...(notification.method === "item/agentMessage/delta"
             ? { textDelta: notification.params.delta }
             : {}),
-          ...(payload !== undefined ? { payload } : {}),
+          ...(payloadWithRuntimeContext !== undefined
+            ? { payload: payloadWithRuntimeContext }
+            : {}),
         });
       });
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
+    const forwardServerNotification = <M extends CodexRpc.ServerNotificationMethod>(
+      method: M,
+      params: CodexRpc.ServerNotificationParamsByMethod[M],
+    ) =>
+      Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
+        Effect.asVoid,
+      );
 
     yield* client.handleServerNotification("thread/started", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.thread.id !== providerThreadId) {
-            return Effect.void;
-          }
-          return updateSession(sessionRef, {
-            resumeCursor: { threadId: payload.thread.id },
-          });
-        }),
+      forwardServerNotification("thread/started", payload).pipe(
+        Effect.andThen(
+          currentSessionProviderThreadId.pipe(
+            Effect.flatMap((providerThreadId) => {
+              if (providerThreadId && payload.thread.id !== providerThreadId) {
+                return Effect.void;
+              }
+              return updateSession(sessionRef, {
+                resumeCursor: { threadId: payload.thread.id },
+              });
+            }),
+          ),
+        ),
       ),
     );
 
     yield* client.handleServerNotification("turn/started", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.threadId !== providerThreadId) {
-            return Effect.void;
-          }
-          return updateSession(sessionRef, {
-            status: "running",
-            activeTurnId: TurnId.make(payload.turn.id),
-          });
-        }),
+      forwardServerNotification("turn/started", payload).pipe(
+        Effect.andThen(
+          currentSessionProviderThreadId.pipe(
+            Effect.flatMap((providerThreadId) => {
+              if (providerThreadId && payload.threadId !== providerThreadId) {
+                return Effect.void;
+              }
+              return updateSession(sessionRef, {
+                status: "running",
+                activeTurnId: TurnId.make(payload.turn.id),
+              });
+            }),
+          ),
+        ),
       ),
     );
 
     yield* client.handleServerNotification("turn/completed", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          if (providerThreadId && payload.threadId !== providerThreadId) {
-            return Effect.void;
-          }
-          const lastError =
-            payload.turn.status === "failed" && "error" in payload.turn && payload.turn.error
-              ? payload.turn.error.message
-              : undefined;
-          return updateSession(sessionRef, {
-            status: payload.turn.status === "failed" ? "error" : "ready",
-            activeTurnId: undefined,
-            ...(lastError ? { lastError } : {}),
-          });
-        }),
+      forwardServerNotification("turn/completed", payload).pipe(
+        Effect.andThen(
+          currentSessionProviderThreadId.pipe(
+            Effect.flatMap((providerThreadId) => {
+              if (providerThreadId && payload.threadId !== providerThreadId) {
+                return Effect.void;
+              }
+              const lastError =
+                payload.turn.status === "failed" && "error" in payload.turn && payload.turn.error
+                  ? payload.turn.error.message
+                  : undefined;
+              return updateSession(sessionRef, {
+                status: payload.turn.status === "failed" ? "error" : "ready",
+                activeTurnId: undefined,
+                ...(lastError ? { lastError } : {}),
+              }).pipe(
+                Effect.andThen(
+                  emitAccountRateLimitsSnapshot.pipe(Effect.ignoreCause({ log: true })),
+                ),
+              );
+            }),
+          ),
+        ),
       ),
     );
 
     yield* client.handleServerNotification("error", (payload) =>
-      currentSessionProviderThreadId.pipe(
-        Effect.flatMap((providerThreadId) => {
-          const payloadThreadId = payload.threadId;
-          if (providerThreadId && payloadThreadId && payloadThreadId !== providerThreadId) {
-            return Effect.void;
-          }
-          const errorMessage = payload.error.message;
-          const willRetry = payload.willRetry;
-          return updateSession(sessionRef, {
-            status: willRetry ? "running" : "error",
-            ...(errorMessage ? { lastError: errorMessage } : {}),
-          });
-        }),
+      forwardServerNotification("error", payload).pipe(
+        Effect.andThen(
+          currentSessionProviderThreadId.pipe(
+            Effect.flatMap((providerThreadId) => {
+              const payloadThreadId = payload.threadId;
+              if (providerThreadId && payloadThreadId && payloadThreadId !== providerThreadId) {
+                return Effect.void;
+              }
+              const errorMessage = payload.error.message;
+              const willRetry = payload.willRetry;
+              return updateSession(sessionRef, {
+                status: willRetry ? "running" : "error",
+                ...(errorMessage ? { lastError: errorMessage } : {}),
+              });
+            }),
+          ),
+        ),
       ),
     );
 
@@ -1078,11 +1291,19 @@ export const makeCodexSessionRuntime = (
           Effect.asVoid,
         ),
       );
+    const handledServerNotificationMethods = new Set<CodexRpc.ServerNotificationMethod>([
+      "thread/started",
+      "turn/started",
+      "turn/completed",
+      "error",
+    ]);
 
     yield* Effect.forEach(
-      Object.values(
-        CodexRpc.SERVER_NOTIFICATION_METHODS,
-      ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>,
+      (
+        Object.values(
+          CodexRpc.SERVER_NOTIFICATION_METHODS,
+        ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>
+      ).filter((method) => !handledServerNotificationMethods.has(method)),
       registerServerNotification,
       { concurrency: 1, discard: true },
     );
@@ -1166,6 +1387,8 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        modelContextWindow: options.modelContextWindow,
+        mcpEnabled: options.mcpEnabled ?? true,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
       });
 
@@ -1180,6 +1403,7 @@ export const makeCodexSessionRuntime = (
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+      yield* emitAccountRateLimitsSnapshot.pipe(Effect.ignoreCause({ log: true }));
       return session;
     });
 
@@ -1192,6 +1416,17 @@ export const makeCodexSessionRuntime = (
       }
       return providerThreadId;
     });
+    const buildTurnStartResult = (turnId: TurnId) =>
+      Effect.gen(function* () {
+        const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        return {
+          threadId: options.threadId,
+          turnId,
+          ...(resumedProviderThreadId
+            ? { resumeCursor: { threadId: resumedProviderThreadId } }
+            : {}),
+        } satisfies ProviderTurnStartResult;
+      });
 
     const close = Effect.gen(function* () {
       const alreadyClosed = yield* Ref.getAndSet(closedRef, true);
@@ -1216,13 +1451,15 @@ export const makeCodexSessionRuntime = (
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
+          const goal = yield* Ref.get(goalRef);
+          const prompt = applyCodexGoalToPrompt(input.input, goal);
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
-            ...(input.input ? { prompt: input.input } : {}),
+            ...(prompt ? { prompt } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
@@ -1243,14 +1480,170 @@ export const makeCodexSessionRuntime = (
             activeTurnId: turnId,
             ...(normalizedModel ? { model: normalizedModel } : {}),
           });
-          const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
-          return {
+          return yield* buildTurnStartResult(turnId);
+        }),
+      steerTurn: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const goal = yield* Ref.get(goalRef);
+          const prompt = applyCodexGoalToPrompt(input.input, goal);
+          const params = yield* buildTurnSteerParams({
+            threadId: providerThreadId,
+            expectedTurnId: input.turnId,
+            ...(prompt ? { prompt } : {}),
+            ...(input.attachments ? { attachments: input.attachments } : {}),
+          });
+          const rawResponse = yield* client.raw.request("turn/steer", params);
+          const response = yield* Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse)(
+            rawResponse,
+          ).pipe(
+            Effect.mapError((error) =>
+              toProtocolParseError("Invalid turn/steer response payload", error),
+            ),
+          );
+          const turnId = TurnId.make(response.turnId);
+          yield* updateSession(sessionRef, {
+            status: "running",
+            activeTurnId: turnId,
+          });
+          return yield* buildTurnStartResult(turnId);
+        }),
+      compactThread: () =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          yield* client.request("thread/compact/start", {
+            threadId: providerThreadId,
+          });
+          const syntheticTurnId = TurnId.make(`compact-${yield* Random.nextUUIDv4}`);
+          const session = yield* Ref.get(sessionRef);
+          yield* updateSession(sessionRef, {
+            status: "running",
+            ...(session.activeTurnId ? {} : { activeTurnId: syntheticTurnId }),
+          });
+          return yield* buildTurnStartResult(session.activeTurnId ?? syntheticTurnId);
+        }),
+      startReview: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const instructions = input.instructions?.trim();
+          const target: EffectCodexSchema.V2ReviewStartParams__ReviewTarget = instructions
+            ? {
+                type: "custom",
+                instructions,
+              }
+            : {
+                type: "uncommittedChanges",
+              };
+          const response = yield* client.request("review/start", {
+            threadId: providerThreadId,
+            delivery: "inline",
+            target,
+          });
+          const turnId = TurnId.make(response.turn.id);
+          yield* updateSession(sessionRef, {
+            status: "running",
+            activeTurnId: turnId,
+          });
+          return yield* buildTurnStartResult(turnId);
+        }),
+      runGoalCommand: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const args = input.args.trim();
+          const normalized = args.toLowerCase();
+          const now = Math.floor(Date.now() / 1000);
+          const turnId = TurnId.make(`goal-${yield* Random.nextUUIDv4}`);
+          if (!args) {
+            const goal = yield* Ref.get(goalRef);
+            yield* emitSessionEventForTurn(
+              "thread/goal/get",
+              goal
+                ? `Goal is ${goal.status}: ${goal.objective}`
+                : "No active goal is set for this thread.",
+              turnId,
+            );
+          } else if (normalized === "clear") {
+            yield* Ref.set(goalRef, null);
+            yield* emitSessionEventForTurn("thread/goal/clear", "Thread goal cleared.", turnId);
+          } else if (normalized === "pause" || normalized === "resume") {
+            const status: CodexSessionRuntimeGoalStatus =
+              normalized === "pause" ? "paused" : "active";
+            const currentGoal = yield* Ref.get(goalRef);
+            if (currentGoal) {
+              yield* Ref.set(goalRef, { ...currentGoal, status, updatedAt: now });
+              yield* emitSessionEventForTurn(
+                "thread/goal/set",
+                normalized === "pause" ? "Thread goal paused." : "Thread goal resumed.",
+                turnId,
+              );
+            } else {
+              yield* emitSessionEventForTurn(
+                "thread/goal/get",
+                "No active goal is set for this thread.",
+                turnId,
+              );
+            }
+          } else {
+            const currentGoal = yield* Ref.get(goalRef);
+            const nextGoal = {
+              objective: args,
+              status: "active",
+              createdAt: currentGoal?.createdAt ?? now,
+              updatedAt: now,
+            } satisfies CodexSessionRuntimeGoalState;
+            yield* Ref.set(goalRef, nextGoal);
+            const goalPrompt = buildCodexGoalStartPrompt(nextGoal);
+            const normalizedModel = normalizeCodexModelSlug((yield* Ref.get(sessionRef)).model);
+            const params = yield* buildTurnStartParams({
+              threadId: providerThreadId,
+              runtimeMode: options.runtimeMode,
+              prompt: goalPrompt,
+              ...(normalizedModel ? { model: normalizedModel } : {}),
+            });
+            const rawResponse = yield* client.raw.request("turn/start", params);
+            const response = yield* Schema.decodeUnknownEffect(
+              EffectCodexSchema.V2TurnStartResponse,
+            )(rawResponse).pipe(
+              Effect.mapError((error) =>
+                toProtocolParseError("Invalid turn/start response payload", error),
+              ),
+            );
+            const startedTurnId = TurnId.make(response.turn.id);
+            yield* emitSessionEventForTurn(
+              "thread/goal/set",
+              `Thread goal set: ${args}`,
+              startedTurnId,
+            );
+            yield* updateSession(sessionRef, {
+              status: "running",
+              activeTurnId: startedTurnId,
+              ...(normalizedModel ? { model: normalizedModel } : {}),
+            });
+            return yield* buildTurnStartResult(startedTurnId);
+          }
+          yield* emitSyntheticCommandTurn(providerThreadId, turnId);
+          return yield* buildTurnStartResult(turnId);
+        }),
+      renameThread: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const name = input.name.trim();
+          yield* client.request("thread/name/set", {
+            threadId: providerThreadId,
+            name,
+          });
+          yield* emitEvent({
+            kind: "notification",
             threadId: options.threadId,
-            turnId,
-            ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
-              : {}),
-          } satisfies ProviderTurnStartResult;
+            method: "thread/name/updated",
+            payload: {
+              threadId: providerThreadId,
+              threadName: name,
+            },
+          });
+          const turnId = TurnId.make(`rename-${yield* Random.nextUUIDv4}`);
+          yield* emitSyntheticCommandTurn(providerThreadId, turnId);
+          return yield* buildTurnStartResult(turnId);
         }),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

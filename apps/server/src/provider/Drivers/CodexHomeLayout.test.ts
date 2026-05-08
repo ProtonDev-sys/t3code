@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 
 import { CodexSettings } from "@t3tools/contracts";
 import {
@@ -30,6 +30,35 @@ const writeTextFile = Effect.fn("CodexHomeLayout.test.writeTextFile")(function* 
   const path = yield* Path.Path;
   yield* fileSystem.makeDirectory(path.dirname(filePath), { recursive: true });
   yield* fileSystem.writeFileString(filePath, contents);
+});
+
+function sameFileIdentity(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
+  return (
+    left.dev === right.dev &&
+    Option.isSome(left.ino) &&
+    Option.isSome(right.ino) &&
+    left.ino.value === right.ino.value
+  );
+}
+
+const pathReferencesTarget = Effect.fn("CodexHomeLayout.test.pathReferencesTarget")(function* (
+  linkPath: string,
+  targetPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const linkResult = yield* fileSystem.readLink(linkPath).pipe(Effect.result);
+  if (linkResult._tag === "Success") {
+    return path.resolve(path.dirname(linkPath), linkResult.success) === targetPath;
+  }
+  const statsResult = yield* Effect.all([
+    fileSystem.stat(linkPath),
+    fileSystem.stat(targetPath),
+  ]).pipe(Effect.result);
+  return (
+    statsResult._tag === "Success" &&
+    sameFileIdentity(statsResult.success[0], statsResult.success[1])
+  );
 });
 
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
@@ -92,7 +121,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         yield* writeTextFile(path.join(sharedHome, "auth.json"), '{"shared":true}\n');
         yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
         yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
-        yield* fileSystem.symlink(
+        yield* fileSystem.link(
           path.join(sharedHome, "models_cache.json"),
           path.join(shadowHome, "models_cache.json"),
         );
@@ -107,7 +136,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         yield* materializeCodexShadowHome(layout);
 
         const sessionsTarget = yield* fileSystem.readLink(path.join(shadowHome, "sessions"));
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const configReferencesShared = yield* pathReferencesTarget(
+          path.join(shadowHome, "config.toml"),
+          path.join(sharedHome, "config.toml"),
+        );
         const modelsCacheExists = yield* fileSystem.exists(
           path.join(shadowHome, "models_cache.json"),
         );
@@ -117,7 +149,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         const authContents = yield* fileSystem.readFileString(path.join(shadowHome, "auth.json"));
 
         expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        expect(configReferencesShared).toBe(true);
         expect(modelsCacheExists).toBe(false);
         expect(authLinkResult._tag).toBe("Failure");
         expect(authContents).toContain("shadow");
@@ -150,7 +182,10 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const configReferencesShared = yield* pathReferencesTarget(
+          path.join(shadowHome, "config.toml"),
+          path.join(sharedHome, "config.toml"),
+        );
         const logLinkResult = yield* fileSystem
           .readLink(path.join(shadowHome, "log"))
           .pipe(Effect.result);
@@ -161,7 +196,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           .readLink(path.join(shadowHome, "tmp"))
           .pipe(Effect.result);
 
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        expect(configReferencesShared).toBe(true);
         expect(logLinkResult._tag).toBe("Failure");
         expect(memoriesLinkResult._tag).toBe("Failure");
         expect(tmpLinkResult._tag).toBe("Failure");

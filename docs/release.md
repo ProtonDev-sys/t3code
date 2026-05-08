@@ -20,7 +20,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
   - Nightly runs are always GitHub prereleases and never marked latest.
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
-- Includes Electron auto-update metadata (for example `latest*.yml`, `nightly*.yml`, and `*.blockmap`) in release assets.
+- Includes Tauri auto-update metadata (`latest.json` or `nightly.json`) and updater signatures in release assets.
 - Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
@@ -38,31 +38,31 @@ This document covers the unified release workflow for stable and nightly desktop
   - release name includes the short commit SHA
   - `make_latest` is always `false`
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
-- Publishes Electron auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
+- Publishes Tauri auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
 - Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
 - Does not commit version bumps back to `main`.
 
 ## Desktop auto-update notes
 
-- Runtime updater: `electron-updater` in `apps/desktop/src/main.ts`.
+- Runtime updater: Tauri updater commands in `apps/desktop/src-tauri/src/main.rs`, exposed to the web app through `apps/web/src/tauriBridge.ts`.
 - Update UX:
   - Background checks run on startup delay + interval.
   - No automatic download or install.
   - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
-- Provider: GitHub Releases (`provider: github`) configured at build time.
-- Repository slug source:
-  - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
-  - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
-- Temporary private-repo auth workaround:
-  - set `T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN` (or `GH_TOKEN`) in the desktop app runtime environment.
-  - the app forwards it as an `Authorization: Bearer <token>` request header for updater HTTP calls.
+- Provider: Tauri updater endpoints configured at build time.
+- Endpoint source:
+  - `T3CODE_TAURI_UPDATER_ENDPOINTS`, if set.
+  - otherwise `T3CODE_DESKTOP_UPDATER_ENDPOINTS` or `TAURI_UPDATER_ENDPOINTS`.
+- Public key source:
+  - `T3CODE_TAURI_UPDATER_PUBKEY`, if set.
+  - otherwise `T3CODE_DESKTOP_UPDATER_PUBKEY`, `TAURI_UPDATER_PUBKEY`, or `TAURI_SIGNING_PUBLIC_KEY`.
 - Required release assets for updater:
-  - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
-  - channel metadata: `latest*.yml` for stable releases, `nightly*.yml` for nightly releases
-  - `*.blockmap` files (used for differential downloads)
-- macOS metadata note:
-  - `electron-updater` reads `latest-mac.yml` on stable and `nightly-mac.yml` on nightly, for both Intel and Apple Silicon.
-  - The workflow merges the per-arch mac manifests into one channel-specific mac manifest before publishing the GitHub Release.
+  - platform installers (`.exe`, `.dmg`, `.AppImage`)
+  - updater signatures (`*.sig`)
+  - channel metadata: `latest.json` for stable releases, `nightly.json` for nightly releases
+- Metadata note:
+  - each matrix build writes a per-platform Tauri manifest first.
+  - the workflow merges those per-platform manifests into one channel manifest before publishing the GitHub Release.
 
 ## 0) npm OIDC trusted publishing setup (CLI)
 

@@ -16,6 +16,7 @@ import {
   Option,
   PubSub,
   Queue,
+  Ref,
   Schema,
   Stream,
 } from "effect";
@@ -27,7 +28,7 @@ import {
   orchestrationCommandsTotal,
   orchestrationCommandDuration,
 } from "../../observability/Metrics.ts";
-import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
@@ -81,6 +82,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+  const layerScope = yield* Effect.scope;
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = readModel.snapshotSequence;
@@ -269,23 +271,47 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
   };
 
-  yield* projectionPipeline.bootstrap;
-  readModel = yield* projectionSnapshotQuery.getSnapshot();
-
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
-  yield* Effect.forkScoped(worker);
-  yield* Effect.logDebug("orchestration engine started").pipe(
-    Effect.annotateLogs({ sequence: readModel.snapshotSequence }),
+  const ready = yield* Deferred.make<void, ProjectionRepositoryError>();
+  const startupStarted = yield* Ref.make(false);
+
+  const startup = Effect.gen(function* () {
+    yield* projectionPipeline.bootstrap;
+    readModel = yield* projectionSnapshotQuery.getSnapshot();
+    yield* worker.pipe(Effect.forkIn(layerScope), Effect.asVoid);
+    yield* Effect.logDebug("orchestration engine started").pipe(
+      Effect.annotateLogs({ sequence: readModel.snapshotSequence }),
+    );
+  });
+
+  const launchStartup = Effect.exit(startup).pipe(
+    Effect.flatMap((exit) =>
+      Exit.isSuccess(exit)
+        ? Deferred.succeed(ready, undefined)
+        : Deferred.failCause(ready, exit.cause),
+    ),
+    Effect.orDie,
   );
 
+  const ensureStarted = Effect.gen(function* () {
+    const shouldStart = yield* Ref.modify(startupStarted, (started) => [!started, true] as const);
+    if (!shouldStart) {
+      return;
+    }
+    yield* launchStartup.pipe(Effect.forkIn(layerScope), Effect.asVoid);
+  });
+
+  const awaitReady = ensureStarted.pipe(Effect.andThen(Deferred.await(ready)), Effect.orDie);
+
   const getReadModel: OrchestrationEngineShape["getReadModel"] = () =>
-    Effect.sync((): OrchestrationReadModel => readModel);
+    awaitReady.pipe(Effect.map((): OrchestrationReadModel => readModel));
 
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
+      yield* awaitReady;
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
       return yield* Deferred.await(result);

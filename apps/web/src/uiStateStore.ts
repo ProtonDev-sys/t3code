@@ -60,14 +60,7 @@ const initialState: UiState = {
   defaultAdvertisedEndpointKey: null,
 };
 
-const persistedCollapsedProjectCwds = new Set<string>();
-const persistedExpandedProjectCwds = new Set<string>();
 const persistedProjectOrderCwds: string[] = [];
-// Pre-fix persisted shape only listed expanded cwds, so anything not listed
-// was treated as collapsed. Track whether the loaded blob carried the new
-// `collapsedProjectCwds` field so we can preserve that legacy semantic for
-// one session after upgrade, until persistState rewrites in the new shape.
-let persistedProjectStateUsesLegacyShape = false;
 const currentProjectCwdById = new Map<string, string>();
 const currentProjectCwdsByLogicalKey = new Map<string, string[]>();
 const currentLogicalKeyByPhysicalKey = new Map<string, string>();
@@ -137,22 +130,11 @@ function sanitizePersistedThreadChangedFilesExpanded(
 }
 
 export function hydratePersistedProjectState(parsed: PersistedUiState): void {
-  persistedCollapsedProjectCwds.clear();
-  persistedExpandedProjectCwds.clear();
   persistedProjectOrderCwds.length = 0;
-  persistedProjectStateUsesLegacyShape = !Array.isArray(parsed.collapsedProjectCwds);
-  for (const cwd of parsed.collapsedProjectCwds ?? []) {
-    if (typeof cwd === "string" && cwd.length > 0) {
-      persistedCollapsedProjectCwds.add(cwd);
-    }
-  }
-  for (const cwd of parsed.expandedProjectCwds ?? []) {
-    if (typeof cwd === "string" && cwd.length > 0) {
-      persistedExpandedProjectCwds.add(cwd);
-    }
-  }
+  const seenCwds = new Set<string>();
   for (const cwd of parsed.projectOrderCwds ?? []) {
-    if (typeof cwd === "string" && cwd.length > 0 && !persistedProjectOrderCwds.includes(cwd)) {
+    if (typeof cwd === "string" && cwd.length > 0 && !seenCwds.has(cwd)) {
+      seenCwds.add(cwd);
       persistedProjectOrderCwds.push(cwd);
     }
   }
@@ -163,27 +145,40 @@ export function persistState(state: UiState): void {
     return;
   }
   try {
-    // Persist collapsed cwds explicitly so an empty/missing field unambiguously
-    // means "first install" rather than "user collapsed everything"; without
-    // this, the syncProjects fallback would re-expand all rows on next launch.
-    const collapsedProjectCwds = Object.entries(state.projectExpandedById)
-      .filter(([, expanded]) => !expanded)
-      .flatMap(([logicalKey]) => currentProjectCwdsByLogicalKey.get(logicalKey) ?? []);
-    const expandedProjectCwds = Object.entries(state.projectExpandedById)
-      .filter(([, expanded]) => expanded)
-      .flatMap(([logicalKey]) => currentProjectCwdsByLogicalKey.get(logicalKey) ?? []);
-    const projectOrderCwds = state.projectOrder.flatMap((projectId) => {
+    // Keep project expansion arrays in the blob for older builds, but current
+    // startup intentionally ignores them so every launch starts collapsed.
+    const collapsedProjectCwds: string[] = [];
+    const expandedProjectCwds: string[] = [];
+    for (const [logicalKey, expanded] of Object.entries(state.projectExpandedById)) {
+      const cwds = currentProjectCwdsByLogicalKey.get(logicalKey);
+      if (cwds) {
+        (expanded ? expandedProjectCwds : collapsedProjectCwds).push(...cwds);
+      }
+    }
+
+    const projectOrderCwds: string[] = [];
+    for (const projectId of state.projectOrder) {
       const cwd = currentProjectCwdById.get(projectId);
-      return cwd ? [cwd] : [];
-    });
-    const threadChangedFilesExpandedById = Object.fromEntries(
-      Object.entries(state.threadChangedFilesExpandedById).flatMap(([threadId, turns]) => {
-        const nextTurns = Object.fromEntries(
-          Object.entries(turns).filter(([, expanded]) => expanded === false),
-        );
-        return Object.keys(nextTurns).length > 0 ? [[threadId, nextTurns]] : [];
-      }),
-    );
+      if (cwd) {
+        projectOrderCwds.push(cwd);
+      }
+    }
+
+    const threadChangedFilesExpandedById: Record<string, Record<string, boolean>> = {};
+    for (const [threadId, turns] of Object.entries(state.threadChangedFilesExpandedById)) {
+      const nextTurns: Record<string, boolean> = {};
+      let hasCollapsedTurn = false;
+      for (const [turnId, expanded] of Object.entries(turns)) {
+        if (expanded === false) {
+          nextTurns[turnId] = false;
+          hasCollapsedTurn = true;
+        }
+      }
+      if (hasCollapsedTurn) {
+        threadChangedFilesExpandedById[threadId] = nextTurns;
+      }
+    }
+
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
@@ -292,7 +287,6 @@ export function syncProjects(state: UiState, projects: readonly SyncProjectInput
   );
   const mappedProjects = projects.map((project, index) => {
     if (!(project.logicalKey in nextExpandedById)) {
-      const groupCwds = currentProjectCwdsByLogicalKey.get(project.logicalKey) ?? [project.cwd];
       const fallbackFromPreviousLogicalKey = (() => {
         const previousKeys = previousLogicalKeysByNewLogicalKey.get(project.logicalKey);
         if (!previousKeys) {
@@ -305,22 +299,8 @@ export function syncProjects(state: UiState, projects: readonly SyncProjectInput
         }
         return undefined;
       })();
-      const fallbackFromPersistedShape = (() => {
-        if (groupCwds.some((cwd) => persistedExpandedProjectCwds.has(cwd))) {
-          return true;
-        }
-        if (groupCwds.some((cwd) => persistedCollapsedProjectCwds.has(cwd))) {
-          return false;
-        }
-        if (persistedProjectStateUsesLegacyShape && persistedExpandedProjectCwds.size > 0) {
-          return false;
-        }
-        return true;
-      })();
       const expanded =
-        previousExpandedById[project.logicalKey] ??
-        fallbackFromPreviousLogicalKey ??
-        fallbackFromPersistedShape;
+        previousExpandedById[project.logicalKey] ?? fallbackFromPreviousLogicalKey ?? false;
       nextExpandedById[project.logicalKey] = expanded;
     }
     return {
@@ -397,11 +377,12 @@ export function syncProjects(state: UiState, projects: readonly SyncProjectInput
 
 export function syncThreads(state: UiState, threads: readonly SyncThreadInput[]): UiState {
   const retainedThreadIds = new Set(threads.map((thread) => thread.key));
-  const nextThreadLastVisitedAtById = Object.fromEntries(
-    Object.entries(state.threadLastVisitedAtById).filter(([threadId]) =>
-      retainedThreadIds.has(threadId),
-    ),
-  );
+  const nextThreadLastVisitedAtById: Record<string, string> = {};
+  for (const [threadId, visitedAt] of Object.entries(state.threadLastVisitedAtById)) {
+    if (retainedThreadIds.has(threadId)) {
+      nextThreadLastVisitedAtById[threadId] = visitedAt;
+    }
+  }
   for (const thread of threads) {
     if (
       nextThreadLastVisitedAtById[thread.key] === undefined &&
@@ -411,11 +392,12 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
       nextThreadLastVisitedAtById[thread.key] = thread.seedVisitedAt;
     }
   }
-  const nextThreadChangedFilesExpandedById = Object.fromEntries(
-    Object.entries(state.threadChangedFilesExpandedById).filter(([threadId]) =>
-      retainedThreadIds.has(threadId),
-    ),
-  );
+  const nextThreadChangedFilesExpandedById: Record<string, Record<string, boolean>> = {};
+  for (const [threadId, turns] of Object.entries(state.threadChangedFilesExpandedById)) {
+    if (retainedThreadIds.has(threadId)) {
+      nextThreadChangedFilesExpandedById[threadId] = turns;
+    }
+  }
   if (
     recordsEqual(state.threadLastVisitedAtById, nextThreadLastVisitedAtById) &&
     nestedBooleanRecordsEqual(
@@ -556,7 +538,7 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
 }
 
 export function toggleProject(state: UiState, projectId: string): UiState {
-  const expanded = state.projectExpandedById[projectId] ?? true;
+  const expanded = state.projectExpandedById[projectId] ?? false;
   return {
     ...state,
     projectExpandedById: {
@@ -567,7 +549,7 @@ export function toggleProject(state: UiState, projectId: string): UiState {
 }
 
 export function setProjectExpanded(state: UiState, projectId: string, expanded: boolean): UiState {
-  if ((state.projectExpandedById[projectId] ?? true) === expanded) {
+  if ((state.projectExpandedById[projectId] ?? false) === expanded) {
     return state;
   }
   return {

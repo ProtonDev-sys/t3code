@@ -153,6 +153,8 @@ describe("ProviderSessionReaper", () => {
           driverKind,
           displayName: undefined,
           enabled: true,
+          mcpEnabled: true,
+          customAgents: [],
           continuationIdentity: {
             driverKind,
             continuationKey: `${driverKind}:instance:${instanceId}`,

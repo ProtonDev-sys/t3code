@@ -1,12 +1,13 @@
 import {
   ClaudeSettings,
   CodexSettings,
+  CopilotSettings,
   CursorSettings,
   OpenCodeSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type { Schema } from "effect";
-import { ClaudeAI, CursorIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import { ClaudeAI, CursorIcon, GitHubIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -52,6 +53,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: CursorIcon,
     badgeLabel: "Early Access",
     settingsSchema: CursorSettings,
+  },
+  {
+    value: ProviderDriverKind.make("copilot"),
+    label: "Copilot",
+    icon: GitHubIcon,
+    badgeLabel: "Preview",
+    settingsSchema: CopilotSettings,
   },
   {
     value: ProviderDriverKind.make("opencode"),

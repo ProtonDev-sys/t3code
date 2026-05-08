@@ -3,7 +3,10 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import type { Thread } from "../types";
 import {
   buildThreadActionItems,
+  COMMAND_PALETTE_SEARCH_RESULT_LIMIT,
+  COMMAND_PALETTE_THREAD_PREWARM_LIMIT,
   filterCommandPaletteGroups,
+  getCommandPaletteThreadPrewarmRefs,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -139,6 +142,85 @@ describe("buildThreadActionItems", () => {
     expect(groups[0]?.items.map((item) => item.value)).toEqual(["thread:project-context-only"]);
   });
 
+  it("matches split word-prefix queries without requiring a literal substring", () => {
+    const group: CommandPaletteGroup = {
+      value: "actions",
+      label: "Actions",
+      items: [
+        {
+          kind: "action",
+          value: "action:new-thread",
+          searchTerms: ["New thread"],
+          title: "New thread",
+          icon: null,
+          run: async () => undefined,
+        },
+      ],
+    };
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [group],
+      query: ">ne th",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["action:new-thread"]);
+  });
+
+  it("matches initials for fast command search", () => {
+    const group: CommandPaletteGroup = {
+      value: "actions",
+      label: "Actions",
+      items: [
+        {
+          kind: "action",
+          value: "action:add-project",
+          searchTerms: ["Add project"],
+          title: "Add project",
+          icon: null,
+          run: async () => undefined,
+        },
+      ],
+    };
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [group],
+      query: ">ap",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["action:add-project"]);
+  });
+
+  it("caps rendered search results for large histories", () => {
+    const group: CommandPaletteGroup = {
+      value: "threads-search",
+      label: "Threads",
+      items: Array.from({ length: COMMAND_PALETTE_SEARCH_RESULT_LIMIT + 5 }, (_, index) => ({
+        kind: "action" as const,
+        value: `thread:${index}`,
+        searchTerms: ["matching thread"],
+        title: `Thread ${index}`,
+        icon: null,
+        run: async () => undefined,
+      })),
+    };
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [group],
+      query: "matching",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups[0]?.items).toHaveLength(COMMAND_PALETTE_SEARCH_RESULT_LIMIT);
+  });
+
   it("filters archived threads out of thread search items", () => {
     const items = buildThreadActionItems({
       threads: [
@@ -162,5 +244,32 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+
+  it("exposes capped thread refs for warming search results", () => {
+    const items = buildThreadActionItems({
+      threads: Array.from({ length: COMMAND_PALETTE_THREAD_PREWARM_LIMIT + 2 }, (_, index) =>
+        makeThread({
+          id: ThreadId.make(`thread-${index}`),
+          title: `Thread ${index}`,
+          createdAt: `2026-03-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+          updatedAt: `2026-03-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        }),
+      ),
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+
+    const refs = getCommandPaletteThreadPrewarmRefs({
+      groups: [{ value: "threads-search", label: "Threads", items }],
+    });
+
+    expect(refs).toHaveLength(COMMAND_PALETTE_THREAD_PREWARM_LIMIT);
+    expect(refs[0]).toEqual({
+      environmentId: LOCAL_ENVIRONMENT_ID,
+      threadId: ThreadId.make(`thread-${COMMAND_PALETTE_THREAD_PREWARM_LIMIT + 1}`),
+    });
   });
 });

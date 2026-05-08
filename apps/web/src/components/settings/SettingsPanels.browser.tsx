@@ -10,7 +10,10 @@ import {
   type DesktopUpdateChannel,
   type DesktopUpdateState,
   type LocalApi,
+  ProviderDriverKind,
+  ProviderInstanceId,
   type ServerConfig,
+  type ServerProvider,
   type SourceControlDiscoveryResult,
 } from "@t3tools/contracts";
 import { DateTime, Option } from "effect";
@@ -23,8 +26,10 @@ import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { useUiStateStore } from "../../uiStateStore";
 import { ConnectionsSettings } from "./ConnectionsSettings";
-import { GeneralSettingsPanel } from "./SettingsPanels";
+import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { __resetCodexPluginsCacheForTests, GeneralSettingsPanel } from "./SettingsPanels";
 import { SourceControlSettingsPanel } from "./SourceControlSettings";
+import { getDriverOption } from "./providerDriverMeta";
 
 const authAccessHarness = vi.hoisted(() => {
   type Snapshot = AuthAccessSnapshot;
@@ -117,6 +122,13 @@ const authAccessHarness = vi.hoisted(() => {
 });
 
 const mockConnectDesktopSshEnvironment = vi.hoisted(() => vi.fn());
+const mockCodexPluginsList = vi.hoisted(() =>
+  vi.fn(async () => ({
+    configPath: "C:\\Users\\proton\\.codex\\config.toml",
+    pluginsPath: "C:\\Users\\proton\\.codex\\plugins",
+    plugins: [],
+  })),
+);
 
 vi.mock("../../environments/runtime", () => {
   const primaryConnection = {
@@ -136,6 +148,67 @@ vi.mock("../../environments/runtime", () => {
       server: {
         subscribeAuthAccess: (listener: Parameters<typeof authAccessHarness.subscribe>[0]) =>
           authAccessHarness.subscribe(listener),
+        codexMcp: {
+          list: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            servers: [],
+          }),
+          add: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            servers: [],
+          }),
+          update: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            servers: [],
+          }),
+          delete: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            servers: [],
+          }),
+        },
+        codexAgents: {
+          list: async () => ({
+            agentsPath: "C:\\Users\\proton\\.codex\\agents",
+            agents: [],
+          }),
+        },
+        codexPlugins: {
+          list: mockCodexPluginsList,
+          install: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            pluginsPath: "C:\\Users\\proton\\.codex\\plugins",
+            plugins: [],
+          }),
+          update: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            pluginsPath: "C:\\Users\\proton\\.codex\\plugins",
+            plugins: [],
+          }),
+        },
+        codexAutomations: {
+          list: async () => ({
+            automationsPath: "C:\\Users\\proton\\.codex\\automations",
+            automations: [],
+          }),
+          save: async () => ({
+            automationsPath: "C:\\Users\\proton\\.codex\\automations",
+            automations: [],
+          }),
+          delete: async () => ({
+            automationsPath: "C:\\Users\\proton\\.codex\\automations",
+            automations: [],
+          }),
+          update: async () => ({
+            automationsPath: "C:\\Users\\proton\\.codex\\automations",
+            automations: [],
+          }),
+        },
+        codexUsageHistory: {
+          list: async () => ({
+            statePath: "C:\\Users\\proton\\.codex\\state_5.sqlite",
+            threads: [],
+          }),
+        },
       },
     },
     ensureBootstrapped: async () => undefined,
@@ -411,6 +484,8 @@ describe("GeneralSettingsPanel observability", () => {
     useUiStateStore.setState({ defaultAdvertisedEndpointKey: null });
     authAccessHarness.reset();
     mockConnectDesktopSshEnvironment.mockReset();
+    mockCodexPluginsList.mockClear();
+    __resetCodexPluginsCacheForTests();
   });
 
   afterEach(async () => {
@@ -426,6 +501,8 @@ describe("GeneralSettingsPanel observability", () => {
     resetServerStateForTests();
     await __resetLocalApiForTests();
     authAccessHarness.reset();
+    mockCodexPluginsList.mockClear();
+    __resetCodexPluginsCacheForTests();
   });
 
   it("hides owner pairing tools in browser-served loopback builds without remote exposure", async () => {
@@ -711,7 +788,7 @@ describe("GeneralSettingsPanel observability", () => {
           label: "This Mac",
           deviceType: "desktop",
           os: "macOS",
-          browser: "Electron",
+          browser: "Tauri",
           ipAddress: "127.0.0.1",
         },
         issuedAt: "2036-04-07T00:00:00.000Z",
@@ -828,7 +905,7 @@ describe("GeneralSettingsPanel observability", () => {
           label: "This Mac",
           deviceType: "desktop",
           os: "macOS",
-          browser: "Electron",
+          browser: "Tauri",
         },
         issuedAt: "2036-04-05T00:00:00.000Z",
         expiresAt: "2036-05-05T00:00:00.000Z",
@@ -1011,6 +1088,47 @@ describe("GeneralSettingsPanel observability", () => {
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
   });
 
+  it("reuses the Codex plugins cache when the plugins settings page remounts", async () => {
+    window.nativeApi = {
+      server: {
+        codexPlugins: {
+          list: mockCodexPluginsList,
+          install: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            pluginsPath: "C:\\Users\\proton\\.codex\\plugins",
+            plugins: [],
+          }),
+          update: async () => ({
+            configPath: "C:\\Users\\proton\\.codex\\config.toml",
+            pluginsPath: "C:\\Users\\proton\\.codex\\plugins",
+            plugins: [],
+          }),
+        },
+      },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel section="plugins" />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByRole("heading", { name: "Codex Plugins" })).toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(mockCodexPluginsList).toHaveBeenCalledTimes(1);
+    });
+
+    await mounted.unmount?.();
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel section="plugins" />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByRole("heading", { name: "Codex Plugins" })).toBeInTheDocument();
+
+    expect(mockCodexPluginsList).toHaveBeenCalledTimes(1);
+  });
+
   it("shows an OpenCode server URL field in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
@@ -1027,9 +1145,182 @@ describe("GeneralSettingsPanel observability", () => {
     // header), so the labels read "Server URL" / "Server password"
     // rather than the old "OpenCode server URL" / "OpenCode server password".
     await expect.element(page.getByText("Server URL")).toBeInTheDocument();
-    await expect.element(page.getByPlaceholder("http://127.0.0.1:4096")).toBeInTheDocument();
+    await expect.element(page.getByPlaceholder("OpenCode server URL")).toBeInTheDocument();
     await expect.element(page.getByText("Server password")).toBeInTheDocument();
-    await expect.element(page.getByPlaceholder("Optional")).toBeInTheDocument();
+    await expect.element(page.getByPlaceholder("Server password")).toBeInTheDocument();
+  });
+
+  it("edits MCP and custom-agent settings from the provider instance card", async () => {
+    const onUpdate = vi.fn();
+    const instanceId = ProviderInstanceId.make("codex");
+    const driverKind = ProviderDriverKind.make("codex");
+    const liveProvider: ServerProvider = {
+      instanceId,
+      driver: driverKind,
+      enabled: true,
+      installed: true,
+      version: "0.116.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    };
+
+    mounted = await render(
+      <ProviderInstanceCard
+        instanceId={instanceId}
+        instance={{ driver: driverKind }}
+        driverOption={getDriverOption(driverKind)}
+        liveProvider={liveProvider}
+        isExpanded={true}
+        onExpandedChange={() => undefined}
+        onUpdate={onUpdate}
+        hiddenModels={[]}
+        favoriteModels={[]}
+        modelOrder={[]}
+        onHiddenModelsChange={() => undefined}
+        onFavoriteModelsChange={() => undefined}
+        onModelOrderChange={() => undefined}
+      />,
+    );
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("MCP servers");
+    });
+    await page.getByLabelText("Toggle MCP servers for this provider").click();
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      driver: driverKind,
+      mcpEnabled: false,
+    });
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("Custom agents");
+    });
+    await page.getByText("Add agent").click();
+
+    await page.getByLabelText("Agent name").fill("Code Reviewer");
+    document.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.blur();
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLInputElement>('[aria-label="Agent id"]')?.value).toBe(
+        "Code-Reviewer",
+      );
+    });
+
+    await page.getByLabelText("Agent description").fill("Reviews changes");
+    document.querySelector<HTMLInputElement>('[aria-label="Agent description"]')?.blur();
+    await page
+      .getByLabelText("Agent instructions")
+      .fill("Focus on correctness, regressions, and tests.");
+    document.querySelector<HTMLTextAreaElement>('[aria-label="Agent instructions"]')?.blur();
+    await page.getByText("Save agent").click();
+
+    await vi.waitFor(() => {
+      expect(onUpdate).toHaveBeenLastCalledWith({
+        driver: driverKind,
+        customAgents: [
+          {
+            id: "Code-Reviewer",
+            name: "Code Reviewer",
+            description: "Reviews changes",
+            instructions: "Focus on correctness, regressions, and tests.",
+            enabled: true,
+          },
+        ],
+      });
+    });
+  });
+
+  it("shows custom agents on their own settings tab", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel section="agents" />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("Custom agents");
+      expect(document.body.textContent).toContain("Custom agents none");
+    });
+  });
+
+  it("shows MCP servers on their own settings tab", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel section="mcp" />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByRole("heading", { name: "MCP Servers" })).toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("Codex MCP Servers");
+      expect(document.body.textContent).toContain("Config path");
+    });
+  });
+
+  it("keeps provider instance rows stable when probe details are long", async () => {
+    const providers: ReadonlyArray<ServerProvider> = [
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "0.116.0",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+      },
+      {
+        instanceId: ProviderInstanceId.make("cursor"),
+        driver: ProviderDriverKind.make("cursor"),
+        enabled: true,
+        installed: false,
+        version: null,
+        status: "error",
+        auth: { status: "unknown" },
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        message:
+          "Could not verify Cursor Agent authentication status. Cursor ACP model discovery failed. Check server logs for details.",
+        models: [],
+        slashCommands: [],
+        skills: [],
+      },
+    ];
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers,
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect
+      .element(page.getByRole("heading", { name: "Cursor", exact: true }))
+      .toBeInTheDocument();
+    const cards = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-provider-instance-card]"),
+    );
+    expect(cards.length).toBeGreaterThanOrEqual(2);
+    const heights = cards.map((card) => card.getBoundingClientRect().height);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(1);
+
+    const cursorStatusLine = document.querySelector<HTMLElement>(
+      '[data-provider-instance-card="cursor"] [data-provider-instance-status-line]',
+    );
+    expect(cursorStatusLine).not.toBeNull();
+    expect(cursorStatusLine!.scrollHeight).toBeLessThanOrEqual(cursorStatusLine!.clientHeight + 1);
   });
 });
 

@@ -21,28 +21,51 @@
  *
  * @module provider/Drivers/CodexDriver
  */
-import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderCustomAgentId,
+  ProviderDriverKind,
+  type CodexAgentSummary,
+  type ProviderCustomAgent,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { listCodexAgentsFromPath } from "../../codexAgentsConfig.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { providerModelsWithCustomAgents, type ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   codexContinuationIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import { materializeCodexCustomAgents } from "./CodexCustomAgents.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+
+function providerCustomAgentFromCodexAgent(agent: CodexAgentSummary): ProviderCustomAgent {
+  return {
+    id: ProviderCustomAgentId.make(agent.id),
+    name: agent.name,
+    instructions: agent.instructions,
+    enabled: true,
+    ...(agent.description ? { description: agent.description } : {}),
+    ...(agent.nicknameCandidates?.length ? { nicknameCandidates: agent.nicknameCandidates } : {}),
+    ...(agent.model ? { model: agent.model } : {}),
+    ...(agent.reasoningEffort ? { reasoningEffort: agent.reasoningEffort } : {}),
+    ...(agent.sandboxMode ? { sandboxMode: agent.sandboxMode } : {}),
+  };
+}
 
 /**
  * Services the driver needs to materialize an instance. Surfaced as the
@@ -68,6 +91,7 @@ const withInstanceIdentity =
     readonly displayName: string | undefined;
     readonly accentColor: string | undefined;
     readonly continuationGroupKey: string;
+    readonly customAgents: ProviderInstance["customAgents"];
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
@@ -76,6 +100,10 @@ const withInstanceIdentity =
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     continuation: { groupKey: input.continuationGroupKey },
+    models: providerModelsWithCustomAgents({
+      models: snapshot.models,
+      customAgents: input.customAgents,
+    }),
   });
 
 export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
@@ -86,18 +114,59 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   },
   configSchema: CodexSettings,
   defaultConfig: (): CodexSettings => Schema.decodeSync(CodexSettings)({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
+  create: ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    mcpEnabled,
+    customAgents,
+    config,
+  }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
+      const path = yield* Path.Path;
+      yield* materializeCodexCustomAgents(homeLayout, instanceId, customAgents).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: cause.message,
+              cause,
+            }),
+        ),
+      );
+      const configuredCustomAgentIds = new Set(customAgents.map((agent) => String(agent.id)));
+      const effectiveCustomAgents = yield* listCodexAgentsFromPath(
+        path.join(homeLayout.sharedHomePath, "agents"),
+      ).pipe(
+        Effect.map((agents) =>
+          agents
+            .filter((agent) => {
+              if (!agent.managed) {
+                return true;
+              }
+              if (agent.managedProviderInstanceId) {
+                return String(agent.managedProviderInstanceId) === String(instanceId);
+              }
+              return configuredCustomAgentIds.has(String(agent.id));
+            })
+            .map(providerCustomAgentFromCodexAgent),
+        ),
+        Effect.catch(() => Effect.succeed(customAgents)),
+      );
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
+        customAgents: effectiveCustomAgents,
       });
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.mapError(
@@ -125,6 +194,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        mcpEnabled,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);
@@ -166,6 +236,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        mcpEnabled,
+        customAgents: effectiveCustomAgents,
       } satisfies ProviderInstance;
     }),
 };

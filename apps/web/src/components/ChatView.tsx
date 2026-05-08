@@ -8,6 +8,7 @@ import {
   type ProjectScript,
   type ProjectId,
   type ProviderApprovalDecision,
+  type ProviderOptionSelection,
   ProviderInstanceId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
@@ -41,7 +42,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
-import { isElectron } from "../env";
+import { isDesktopShell } from "../env";
 import { readLocalApi } from "../localApi";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
@@ -62,6 +63,7 @@ import {
   hasActionableProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
+  isSessionActivelyRunning,
   formatElapsed,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -104,7 +106,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import { ChevronDownIcon, LoaderIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -139,7 +141,11 @@ import {
   type TerminalContextSelection,
 } from "../lib/terminalContext";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
-import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import {
+  ChatComposer,
+  type ChatComposerHandle,
+  type SelectedProviderSlashCommand,
+} from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -328,6 +334,139 @@ function formatOutgoingPrompt(params: {
   const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
   return applyClaudePromptEffortPrefix(params.text, promptEffort);
 }
+
+function formatProviderSlashCommandText(
+  selectedCommand: SelectedProviderSlashCommand,
+  args: string,
+): string {
+  const trimmedArgs = args.trim();
+  return trimmedArgs
+    ? `/${selectedCommand.command.name} ${trimmedArgs}`
+    : `/${selectedCommand.command.name}`;
+}
+
+function buildQueuedFollowUpPreview(snapshot: ComposerSendContext): string {
+  const text = snapshot.selectedProviderSlashCommand
+    ? formatProviderSlashCommandText(snapshot.selectedProviderSlashCommand, snapshot.prompt)
+    : snapshot.prompt;
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+  if (normalizedText) {
+    return truncate(normalizedText, 140);
+  }
+
+  const parts: string[] = [];
+  if (snapshot.images.length > 0) {
+    parts.push(snapshot.images.length === 1 ? "1 image" : `${snapshot.images.length} images`);
+  }
+  if (snapshot.terminalContexts.length > 0) {
+    parts.push(
+      snapshot.terminalContexts.length === 1
+        ? "1 terminal context"
+        : `${snapshot.terminalContexts.length} terminal contexts`,
+    );
+  }
+  return parts.length > 0 ? parts.join(", ") : "Empty follow-up";
+}
+
+function revokeQueuedFollowUpPreviewUrls(followUp: QueuedThreadFollowUp): void {
+  for (const image of followUp.snapshot.images) {
+    revokeBlobPreviewUrl(image.previewUrl);
+  }
+}
+
+function readActivityPayloadRecord(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+}
+
+function deriveRunningFollowUpDescription(params: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  activeTurnId: TurnId | null;
+  sessionActivelyRunning: boolean;
+}): string {
+  if (!params.sessionActivelyRunning) {
+    return "This follow-up will send when the thread is ready.";
+  }
+
+  const activeTasks = new Map<
+    string,
+    { id: string; description: string; taskType: string | null }
+  >();
+
+  for (const activity of params.activities) {
+    if (params.activeTurnId && activity.turnId && activity.turnId !== params.activeTurnId) {
+      continue;
+    }
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+
+    const payload = readActivityPayloadRecord(activity.payload);
+    const taskId = typeof payload?.taskId === "string" ? payload.taskId : null;
+    if (!taskId) {
+      continue;
+    }
+
+    if (activity.kind === "task.completed") {
+      activeTasks.delete(taskId);
+      continue;
+    }
+
+    const description =
+      (typeof payload?.summary === "string" ? payload.summary : null) ??
+      (typeof payload?.description === "string" ? payload.description : null) ??
+      activity.summary;
+    const taskType = typeof payload?.taskType === "string" ? payload.taskType : null;
+    activeTasks.set(taskId, {
+      id: taskId,
+      description,
+      taskType,
+    });
+  }
+
+  const activeTaskText = [...activeTasks.values()]
+    .map((task) => `${task.id} ${task.taskType ?? ""} ${task.description}`.toLowerCase())
+    .join(" ");
+  const hasGoal = activeTaskText.includes("goal");
+  const hasSubagent = activeTaskText.includes("subagent") || activeTaskText.includes("sub agent");
+
+  if (hasGoal && hasSubagent) {
+    return "A goal and subagents are running.";
+  }
+  if (hasSubagent) {
+    return "Subagents are running.";
+  }
+  if (hasGoal) {
+    return "A goal is running.";
+  }
+  if (activeTasks.size > 1) {
+    return `${activeTasks.size} tasks are running.`;
+  }
+  if (activeTasks.size === 1) {
+    return "A task is running.";
+  }
+  return "This thread is running.";
+}
+
+function setProviderOptionValue(
+  options: ReadonlyArray<ProviderOptionSelection> | undefined,
+  optionId: string,
+  value: ProviderOptionSelection["value"],
+): ProviderOptionSelection[] {
+  const next = [...(options ?? [])].filter((option) => option.id !== optionId);
+  next.push({ id: optionId, value });
+  return next;
+}
+
+function readProviderBooleanOption(
+  options: ReadonlyArray<ProviderOptionSelection> | undefined,
+  optionId: string,
+): boolean {
+  return options?.find((option) => option.id === optionId)?.value === true;
+}
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
@@ -356,6 +495,45 @@ interface TerminalLaunchContext {
 }
 
 type PersistentTerminalLaunchContext = Pick<TerminalLaunchContext, "cwd" | "worktreePath">;
+
+type ComposerSendContext = ReturnType<ChatComposerHandle["getSendContext"]>;
+
+interface QueuedThreadFollowUp {
+  id: string;
+  threadId: ThreadId;
+  createdAt: string;
+  interactionMode: ProviderInteractionMode;
+  preview: string;
+  runtimeMode: RuntimeMode;
+  snapshot: ComposerSendContext;
+}
+
+async function buildComposerTurnCommandMessage(snapshot: ComposerSendContext) {
+  const baseMessageText = appendTerminalContextsToPrompt(
+    snapshot.prompt,
+    snapshot.terminalContexts,
+  );
+  const messageText = snapshot.selectedProviderSlashCommand
+    ? formatProviderSlashCommandText(snapshot.selectedProviderSlashCommand, baseMessageText)
+    : baseMessageText;
+  const text = formatOutgoingPrompt({
+    provider: snapshot.selectedProvider,
+    model: snapshot.selectedModel,
+    models: snapshot.selectedProviderModels,
+    effort: snapshot.selectedPromptEffort,
+    text: messageText || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  });
+  const attachments = await Promise.all(
+    snapshot.images.map(async (image) => ({
+      type: "image" as const,
+      name: image.name,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      dataUrl: await readFileAsDataUrl(image.file),
+    })),
+  );
+  return { text, attachments };
+}
 
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
@@ -685,6 +863,8 @@ export default function ChatView(props: ChatViewProps) {
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
+  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedThreadFollowUp[]>([]);
+  const queuedFollowUpsRef = useRef<QueuedThreadFollowUp[]>([]);
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
     Record<string, string | null>
   >({});
@@ -729,6 +909,30 @@ export default function ChatView(props: ChatViewProps) {
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+  const updateQueuedFollowUps = useCallback(
+    (updater: (current: QueuedThreadFollowUp[]) => QueuedThreadFollowUp[]) => {
+      setQueuedFollowUps((current) => {
+        const next = updater(current);
+        queuedFollowUpsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+  const dismissQueuedFollowUp = useCallback(
+    (followUpId: string) => {
+      const followUp = queuedFollowUpsRef.current.find((item) => item.id === followUpId);
+      if (followUp) {
+        revokeQueuedFollowUpPreviewUrls(followUp);
+      }
+      updateQueuedFollowUps((current) => current.filter((item) => item.id !== followUpId));
+    },
+    [updateQueuedFollowUps],
+  );
+
+  useEffect(() => {
+    queuedFollowUpsRef.current = queuedFollowUps;
+  }, [queuedFollowUps]);
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef),
@@ -1356,7 +1560,23 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError: activeThread?.error,
   });
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const providerTurnActivelyRunning = isSessionActivelyRunning(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
+  const turnStartPending =
+    activeLatestTurn !== null && !activeLatestTurn.startedAt && !activeLatestTurn.completedAt;
+  const sessionActivelyRunning = providerTurnActivelyRunning || turnStartPending;
+  const activeSteerTurnId =
+    providerTurnActivelyRunning && activeThread
+      ? (activeThread.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null)
+      : null;
+  const visiblePhase: SessionPhase = sessionActivelyRunning
+    ? "running"
+    : phase === "running"
+      ? "ready"
+      : phase;
+  const isWorking = sessionActivelyRunning || isSendBusy || isConnecting || isRevertingCheckpoint;
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -1780,15 +2000,18 @@ export default function ChatView(props: ChatViewProps) {
 
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
-  }, []);
+  }, [composerRef]);
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
     });
   }, [focusComposer]);
-  const addTerminalContextToDraft = useCallback((selection: TerminalContextSelection) => {
-    composerRef.current?.addTerminalContext(selection);
-  }, []);
+  const addTerminalContextToDraft = useCallback(
+    (selection: TerminalContextSelection) => {
+      composerRef.current?.addTerminalContext(selection);
+    },
+    [composerRef],
+  );
   const setTerminalOpen = useCallback(
     (open: boolean) => {
       if (!activeThreadRef) return;
@@ -1979,7 +2202,7 @@ export default function ChatView(props: ChatViewProps) {
         command: input.keybindingCommand,
       });
 
-      if (isElectron && keybindingRule) {
+      if (isDesktopShell && keybindingRule) {
         const localApi = readLocalApi();
         if (!localApi) {
           throw new Error("Local API unavailable.");
@@ -2546,6 +2769,7 @@ export default function ChatView(props: ChatViewProps) {
     keybindings,
     onToggleDiff,
     toggleTerminalVisibility,
+    composerRef,
   ]);
 
   const onRevertToTurnCount = useCallback(
@@ -2561,7 +2785,7 @@ export default function ChatView(props: ChatViewProps) {
         );
         return;
       }
-      if (phase === "running" || isSendBusy || isConnecting) {
+      if (sessionActivelyRunning || isSendBusy || isConnecting) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
@@ -2602,20 +2826,31 @@ export default function ChatView(props: ChatViewProps) {
       isConnecting,
       isRevertingCheckpoint,
       isSendBusy,
-      phase,
+      sessionActivelyRunning,
       setThreadError,
     ],
   );
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    options?: {
+      allowWhileRunning?: boolean;
+      queuedFollowUpId?: string;
+      runtimeMode?: RuntimeMode;
+      interactionMode?: ProviderInteractionMode;
+      sendCtx?: ComposerSendContext;
+    },
+  ) => {
     e?.preventDefault();
+    const isSendingQueuedSnapshot = Boolean(options?.sendCtx);
+    const isSteeringQueuedSnapshot = Boolean(options?.allowWhileRunning && options?.sendCtx);
     const api = readEnvironmentApi(environmentId);
     if (
       !api ||
       !activeThread ||
       isSendBusy ||
       isConnecting ||
-      activeEnvironmentUnavailable ||
+      (activeEnvironmentUnavailable && !isSteeringQueuedSnapshot) ||
       sendInFlightRef.current
     )
       return;
@@ -2623,18 +2858,21 @@ export default function ChatView(props: ChatViewProps) {
       onAdvanceActivePendingUserInput();
       return;
     }
-    const sendCtx = composerRef.current?.getSendContext();
+    const sendCtx = options?.sendCtx ?? composerRef.current?.getSendContext();
     if (!sendCtx) return;
     const {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
+      selectedProviderSlashCommand,
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
-    const promptForSend = promptRef.current;
+    const promptForSend = sendCtx.prompt;
+    const runtimeModeForSend = options?.runtimeMode ?? runtimeMode;
+    const interactionModeForSend = options?.interactionMode ?? interactionMode;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -2645,7 +2883,9 @@ export default function ChatView(props: ChatViewProps) {
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
     });
-    if (showPlanFollowUpPrompt && activeProposedPlan) {
+    const hasProviderSlashCommand = selectedProviderSlashCommand !== null;
+    const hasSendableContentForDispatch = hasSendableContent || hasProviderSlashCommand;
+    if (!isSendingQueuedSnapshot && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
@@ -2660,7 +2900,9 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+      !hasProviderSlashCommand &&
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
@@ -2670,7 +2912,7 @@ export default function ChatView(props: ChatViewProps) {
       composerRef.current?.resetCursorState();
       return;
     }
-    if (!hasSendableContent) {
+    if (!hasSendableContentForDispatch) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
           expiredTerminalContextCount,
@@ -2687,6 +2929,106 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     if (!activeProject) return;
+    const typedFastCommandArgs = (() => {
+      if (selectedProviderSlashCommand !== null) return null;
+      const match = /^\/fast(?:\s+([\s\S]*))?$/i.exec(trimmed);
+      return match ? (match[1] ?? "").trim() : null;
+    })();
+    const fastCommandArgs =
+      selectedProviderSlashCommand?.command.name === "fast" ? trimmed : typedFastCommandArgs;
+    if (fastCommandArgs !== null) {
+      const currentFastMode = readProviderBooleanOption(
+        ctxSelectedModelSelection.options,
+        "fastMode",
+      );
+      const args =
+        fastCommandArgs.trim().length === 0
+          ? currentFastMode
+            ? "off"
+            : "on"
+          : fastCommandArgs.toLowerCase();
+      if (args === "status") {
+        toastManager.add({
+          type: "info",
+          title: "Fast mode",
+          description: `Fast mode is ${currentFastMode ? "on" : "off"}.`,
+        });
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.setProviderSlashCommand(null);
+        composerRef.current?.resetCursorState();
+        return;
+      }
+      if (args !== "on" && args !== "off") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Usage: /fast on | off | status",
+            description: "This command was handled locally and was not sent as a prompt.",
+          }),
+        );
+        return;
+      }
+
+      const nextOptions = setProviderOptionValue(
+        ctxSelectedModelSelection.options,
+        "fastMode",
+        args === "on",
+      );
+      const nextModelSelection = createModelSelection(
+        ctxSelectedModelSelection.instanceId,
+        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        nextOptions,
+      );
+      setComposerDraftModelSelection(composerDraftTarget, nextModelSelection);
+      setStickyComposerModelSelection(nextModelSelection);
+      toastManager.add({
+        type: "success",
+        title: "Fast mode",
+        description: `Fast mode is now ${args}.`,
+      });
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.setProviderSlashCommand(null);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+    if (sessionActivelyRunning && !options?.allowWhileRunning) {
+      const queuedSnapshot: ComposerSendContext = {
+        ...sendCtx,
+        prompt: promptForSend,
+        images: [...composerImages],
+        terminalContexts: [...sendableComposerTerminalContexts],
+      };
+      const queuedFollowUp: QueuedThreadFollowUp = {
+        id: randomUUID(),
+        threadId: activeThread.id,
+        createdAt: new Date().toISOString(),
+        interactionMode: interactionModeForSend,
+        preview: buildQueuedFollowUpPreview(queuedSnapshot),
+        runtimeMode: runtimeModeForSend,
+        snapshot: queuedSnapshot,
+      };
+      updateQueuedFollowUps((current) => [...current, queuedFollowUp]);
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.setProviderSlashCommand(null);
+      composerRef.current?.resetCursorState();
+      return;
+    }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
@@ -2708,10 +3050,13 @@ export default function ChatView(props: ChatViewProps) {
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const messageTextForSend = appendTerminalContextsToPrompt(
+    const baseMessageTextForSend = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
     );
+    const messageTextForSend = selectedProviderSlashCommand
+      ? formatProviderSlashCommandText(selectedProviderSlashCommand, baseMessageTextForSend)
+      : baseMessageTextForSend;
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt({
@@ -2772,9 +3117,12 @@ export default function ChatView(props: ChatViewProps) {
         }),
       );
     }
-    promptRef.current = "";
-    clearComposerDraftContent(composerDraftTarget);
-    composerRef.current?.resetCursorState();
+    if (!isSendingQueuedSnapshot) {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.setProviderSlashCommand(null);
+      composerRef.current?.resetCursorState();
+    }
 
     let turnStartSucceeded = false;
     await (async () => {
@@ -2817,8 +3165,8 @@ export default function ChatView(props: ChatViewProps) {
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
           ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
-          runtimeMode,
-          interactionMode,
+          runtimeMode: runtimeModeForSend,
+          interactionMode: interactionModeForSend,
         });
       }
 
@@ -2832,8 +3180,8 @@ export default function ChatView(props: ChatViewProps) {
                       projectId: activeProject.id,
                       title,
                       modelSelection: threadCreateModelSelection,
-                      runtimeMode,
-                      interactionMode,
+                      runtimeMode: runtimeModeForSend,
+                      interactionMode: interactionModeForSend,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
@@ -2865,27 +3213,37 @@ export default function ChatView(props: ChatViewProps) {
         },
         modelSelection: ctxSelectedModelSelection,
         titleSeed: title,
-        runtimeMode,
-        interactionMode,
+        runtimeMode: runtimeModeForSend,
+        interactionMode: interactionModeForSend,
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       });
       turnStartSucceeded = true;
     })().catch(async (err: unknown) => {
-      if (
+      const canRestoreSnapshotToComposer =
         !turnStartSucceeded &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0
-      ) {
+        composerTerminalContextsRef.current.length === 0;
+      const shouldRequeueQueuedSnapshot =
+        !canRestoreSnapshotToComposer &&
+        Boolean(options?.queuedFollowUpId) &&
+        Boolean(options?.sendCtx);
+
+      if (!turnStartSucceeded) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
           for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
+            if (!shouldRequeueQueuedSnapshot) {
+              revokeUserMessagePreviewUrls(message);
+            }
           }
           const next = existing.filter((message) => message.id !== messageIdForSend);
           return next.length === existing.length ? existing : next;
         });
+      }
+
+      if (!turnStartSucceeded && canRestoreSnapshotToComposer) {
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -2893,11 +3251,27 @@ export default function ChatView(props: ChatViewProps) {
         setComposerDraftPrompt(composerDraftTarget, promptForSend);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
+        composerRef.current?.setProviderSlashCommand(selectedProviderSlashCommand);
         composerRef.current?.resetCursorState({
           cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
           prompt: promptForSend,
           detectTrigger: true,
         });
+      } else if (!turnStartSucceeded && options?.queuedFollowUpId && options.sendCtx) {
+        const retryFollowUp: QueuedThreadFollowUp = {
+          id: options.queuedFollowUpId,
+          threadId: threadIdForSend,
+          createdAt: messageCreatedAt,
+          interactionMode: interactionModeForSend,
+          preview: buildQueuedFollowUpPreview(options.sendCtx),
+          runtimeMode: runtimeModeForSend,
+          snapshot: options.sendCtx,
+        };
+        updateQueuedFollowUps((current) =>
+          current.some((item) => item.id === retryFollowUp.id)
+            ? current
+            : [retryFollowUp, ...current],
+        );
       }
       setThreadError(
         threadIdForSend,
@@ -2909,14 +3283,168 @@ export default function ChatView(props: ChatViewProps) {
       resetLocalDispatch();
     }
   };
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
+  });
+
+  const sendQueuedFollowUp = useCallback(
+    async (followUpId: string, allowWhileRunning: boolean) => {
+      const followUp = queuedFollowUpsRef.current.find((item) => item.id === followUpId);
+      if (!followUp || !activeThread || followUp.threadId !== activeThread.id) {
+        return;
+      }
+      if (
+        !readEnvironmentApi(environmentId) ||
+        !activeProject ||
+        isSendBusy ||
+        isConnecting ||
+        (!allowWhileRunning && activeEnvironmentUnavailable) ||
+        sendInFlightRef.current ||
+        activePendingProgress
+      ) {
+        return;
+      }
+      if (!allowWhileRunning && sessionActivelyRunning) {
+        return;
+      }
+
+      if (allowWhileRunning && sessionActivelyRunning) {
+        const api = readEnvironmentApi(environmentId);
+        if (!api) {
+          return;
+        }
+        if (!activeSteerTurnId) {
+          setThreadError(activeThread.id, "No active turn is available to steer.");
+          return;
+        }
+
+        updateQueuedFollowUps((current) => current.filter((item) => item.id !== followUp.id));
+        sendInFlightRef.current = true;
+        try {
+          const message = await buildComposerTurnCommandMessage(followUp.snapshot);
+          await api.orchestration.dispatchCommand({
+            type: "thread.turn.steer",
+            commandId: newCommandId(),
+            threadId: activeThread.id,
+            turnId: activeSteerTurnId,
+            message,
+            createdAt: new Date().toISOString(),
+          });
+          revokeQueuedFollowUpPreviewUrls(followUp);
+          setThreadError(activeThread.id, null);
+        } catch (err) {
+          updateQueuedFollowUps((current) =>
+            current.some((item) => item.id === followUp.id) ? current : [followUp, ...current],
+          );
+          setThreadError(
+            activeThread.id,
+            err instanceof Error ? err.message : "Failed to steer queued follow-up.",
+          );
+        } finally {
+          sendInFlightRef.current = false;
+        }
+        return;
+      }
+
+      updateQueuedFollowUps((current) => current.filter((item) => item.id !== followUp.id));
+      await onSendRef.current(undefined, {
+        allowWhileRunning,
+        queuedFollowUpId: followUp.id,
+        runtimeMode: followUp.runtimeMode,
+        interactionMode: followUp.interactionMode,
+        sendCtx: followUp.snapshot,
+      });
+    },
+    [
+      activeEnvironmentUnavailable,
+      activePendingProgress,
+      activeProject,
+      activeSteerTurnId,
+      activeThread,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      sessionActivelyRunning,
+      setThreadError,
+      updateQueuedFollowUps,
+    ],
+  );
+
+  useEffect(() => {
+    if (
+      !activeThread ||
+      sessionActivelyRunning ||
+      isSendBusy ||
+      isConnecting ||
+      activeEnvironmentUnavailable ||
+      sendInFlightRef.current ||
+      activePendingProgress ||
+      pendingApprovals.length > 0 ||
+      pendingUserInputs.length > 0 ||
+      isRevertingCheckpoint
+    ) {
+      return;
+    }
+
+    const nextFollowUp = queuedFollowUpsRef.current.find(
+      (item) => item.threadId === activeThread.id,
+    );
+    if (!nextFollowUp) {
+      return;
+    }
+    void sendQueuedFollowUp(nextFollowUp.id, false);
+  }, [
+    activeEnvironmentUnavailable,
+    activePendingProgress,
+    activeThread,
+    isConnecting,
+    isRevertingCheckpoint,
+    isSendBusy,
+    pendingApprovals.length,
+    pendingUserInputs.length,
+    queuedFollowUps,
+    sendQueuedFollowUp,
+    sessionActivelyRunning,
+  ]);
+
+  const runningFollowUpDescription = useMemo(
+    () =>
+      deriveRunningFollowUpDescription({
+        activities: threadActivities,
+        activeTurnId: activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null,
+        sessionActivelyRunning,
+      }),
+    [
+      activeLatestTurn?.turnId,
+      activeThread?.session?.activeTurnId,
+      sessionActivelyRunning,
+      threadActivities,
+    ],
+  );
+  const activeQueuedFollowUps = useMemo(() => {
+    if (!activeThread) {
+      return [];
+    }
+    return queuedFollowUps
+      .filter((followUp) => followUp.threadId === activeThread.id)
+      .map((followUp) => ({
+        id: followUp.id,
+        preview: followUp.preview,
+        description: `${runningFollowUpDescription} It will send when the current run finishes.`,
+      }));
+  }, [activeThread, queuedFollowUps, runningFollowUpDescription]);
 
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
+    const activeTurnId =
+      activeThread.session?.activeTurnId ?? activeLatestTurn?.turnId ?? undefined;
     await api.orchestration.dispatchCommand({
       type: "thread.turn.interrupt",
       commandId: newCommandId(),
       threadId: activeThread.id,
+      ...(activeTurnId ? { turnId: activeTurnId } : {}),
       createdAt: new Date().toISOString(),
     });
   };
@@ -3020,7 +3548,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       composerRef.current?.resetCursorState({ cursor: 0 });
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput],
+    [activePendingProgress?.activeQuestion, activePendingUserInput, composerRef],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -3054,7 +3582,7 @@ export default function ChatView(props: ChatViewProps) {
         composerRef.current?.focusAt(nextCursor);
       }
     },
-    [activePendingUserInput],
+    [activePendingUserInput, composerRef],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
@@ -3226,6 +3754,7 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError,
       autoOpenPlanSidebar,
       environmentId,
+      composerRef,
     ],
   );
 
@@ -3363,6 +3892,7 @@ export default function ChatView(props: ChatViewProps) {
     runtimeMode,
     autoOpenPlanSidebar,
     environmentId,
+    composerRef,
   ]);
 
   const onProviderModelSelect = useCallback(
@@ -3492,6 +4022,16 @@ export default function ChatView(props: ChatViewProps) {
 
   // Empty state: no active thread
   if (!activeThread) {
+    if (routeKind === "server") {
+      return (
+        <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm">
+            <LoaderIcon className="size-4 animate-spin" />
+            Loading thread...
+          </div>
+        </div>
+      );
+    }
     return <NoActiveThreadState />;
   }
 
@@ -3501,7 +4041,7 @@ export default function ChatView(props: ChatViewProps) {
       <header
         className={cn(
           "border-b border-border",
-          isElectron
+          isDesktopShell
             ? cn(
                 "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
                 reserveTitleBarControlInset &&
@@ -3546,7 +4086,7 @@ export default function ChatView(props: ChatViewProps) {
         onDismiss={() => setThreadError(activeThread.id, null)}
       />
       {/* Main content area with optional plan sidebar */}
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {/* Chat column */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Messages Wrapper */}
@@ -3596,13 +4136,14 @@ export default function ChatView(props: ChatViewProps) {
           <div
             className={cn(
               "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
+              "relative z-20",
               isGitRepo
                 ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
             )}
           >
             <div className="relative isolate">
-              <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+              <ComposerBannerStack className="relative z-30" items={composerBannerItems} />
               <div className="relative z-10">
                 <ChatComposer
                   ref={composerRef}
@@ -3616,7 +4157,7 @@ export default function ChatView(props: ChatViewProps) {
                   activeThread={activeThread}
                   isServerThread={isServerThread}
                   isLocalDraftThread={isLocalDraftThread}
-                  phase={phase}
+                  phase={visiblePhase}
                   isConnecting={isConnecting}
                   isSendBusy={isSendBusy}
                   isPreparingWorktree={isPreparingWorktree}
@@ -3643,6 +4184,7 @@ export default function ChatView(props: ChatViewProps) {
                   activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
                   activeThreadModelSelection={activeThread?.modelSelection}
                   activeThreadActivities={activeThread?.activities}
+                  queuedFollowUps={activeQueuedFollowUps}
                   resolvedTheme={resolvedTheme}
                   settings={settings}
                   keybindings={keybindings}
@@ -3654,6 +4196,8 @@ export default function ChatView(props: ChatViewProps) {
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scrollToEnd}
                   onSend={onSend}
+                  onSteerQueuedFollowUp={(followUpId) => void sendQueuedFollowUp(followUpId, true)}
+                  onDismissQueuedFollowUp={dismissQueuedFollowUp}
                   onInterrupt={onInterrupt}
                   onImplementPlanInNewThread={onImplementPlanInNewThread}
                   onRespondToApproval={onRespondToApproval}
@@ -3722,17 +4266,21 @@ export default function ChatView(props: ChatViewProps) {
 
         {/* Plan sidebar */}
         {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
-          <PlanSidebar
-            activePlan={activePlan}
-            activeProposedPlan={sidebarProposedPlan}
-            label={planSidebarLabel}
-            environmentId={environmentId}
-            markdownCwd={gitCwd ?? undefined}
-            workspaceRoot={activeWorkspaceRoot}
-            timestampFormat={timestampFormat}
-            mode="sidebar"
-            onClose={closePlanSidebar}
-          />
+          <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex justify-end">
+            <div className="pointer-events-auto h-full shadow-xl">
+              <PlanSidebar
+                activePlan={activePlan}
+                activeProposedPlan={sidebarProposedPlan}
+                label={planSidebarLabel}
+                environmentId={environmentId}
+                markdownCwd={gitCwd ?? undefined}
+                workspaceRoot={activeWorkspaceRoot}
+                timestampFormat={timestampFormat}
+                mode="sidebar"
+                onClose={closePlanSidebar}
+              />
+            </div>
+          </div>
         ) : null}
       </div>
       {/* end horizontal flex container */}

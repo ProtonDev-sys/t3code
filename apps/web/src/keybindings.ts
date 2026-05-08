@@ -68,6 +68,60 @@ function normalizeEventKey(key: string): string {
   return normalized;
 }
 
+function normalizeShortcutInputKeyToken(key: string): string | null {
+  const normalized = key.toLowerCase();
+  if (
+    normalized === "meta" ||
+    normalized === "control" ||
+    normalized === "ctrl" ||
+    normalized === "shift" ||
+    normalized === "alt" ||
+    normalized === "option"
+  ) {
+    return null;
+  }
+  if (normalized === " ") return "space";
+  if (normalized === "escape") return "esc";
+  if (normalized === "arrowup") return "arrowup";
+  if (normalized === "arrowdown") return "arrowdown";
+  if (normalized === "arrowleft") return "arrowleft";
+  if (normalized === "arrowright") return "arrowright";
+  if (normalized.length === 1) return normalized;
+  if (normalized.startsWith("f") && normalized.length <= 3) return normalized;
+  if (normalized === "enter" || normalized === "tab" || normalized === "backspace") {
+    return normalized;
+  }
+  if (normalized === "delete" || normalized === "home" || normalized === "end") {
+    return normalized;
+  }
+  if (normalized === "pageup" || normalized === "pagedown") return normalized;
+  return null;
+}
+
+export function keybindingValueFromShortcutEvent(
+  event: ShortcutEventLike,
+  platform = navigator.platform,
+): string | null {
+  const keyToken = normalizeShortcutInputKeyToken(event.key);
+  if (!keyToken) return null;
+
+  const parts: string[] = [];
+  if (isMacPlatform(platform)) {
+    if (event.metaKey) parts.push("mod");
+    if (event.ctrlKey) parts.push("ctrl");
+  } else {
+    if (event.ctrlKey) parts.push("mod");
+    if (event.metaKey) parts.push("meta");
+  }
+  if (event.altKey) parts.push("alt");
+  if (event.shiftKey) parts.push("shift");
+  if (parts.length === 0) {
+    return null;
+  }
+  parts.push(keyToken);
+  return parts.join("+");
+}
+
 function resolveEventKeys(event: ShortcutEventLike): Set<string> {
   const keys = new Set([normalizeEventKey(event.key)]);
   const aliases = event.code ? EVENT_CODE_KEY_ALIASES[event.code] : undefined;

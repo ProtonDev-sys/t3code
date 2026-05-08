@@ -13,7 +13,7 @@ import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
+import { ACPRegistryIcon, Gemini, PiAgentIcon, type Icon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -71,11 +71,6 @@ interface ComingSoonDriverOption {
 }
 
 const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
-  {
-    value: ProviderDriverKind.make("githubCopilot"),
-    label: "Github Copilot",
-    icon: GithubCopilotIcon,
-  },
   {
     value: ProviderDriverKind.make("gemini"),
     label: "Gemini",
@@ -363,7 +358,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 <span className="text-xs font-medium text-foreground">Label</span>
                 <Input
                   className="bg-background"
-                  placeholder="e.g. Work"
+                  placeholder="Provider instance label"
                   value={label}
                   onChange={(event) => setLabel(event.target.value)}
                 />
@@ -376,7 +371,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 <span className="text-xs font-medium text-foreground">Instance ID</span>
                 <Input
                   className="bg-background"
-                  placeholder={`${driver}_work`}
+                  placeholder="Provider instance id"
                   value={instanceId}
                   onChange={(event) => {
                     setInstanceIdDirty(true);

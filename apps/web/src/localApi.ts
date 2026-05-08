@@ -16,6 +16,7 @@ import {
 import { getPrimaryKnownEnvironment } from "./environments/primary";
 import { type WsRpcClient } from "./rpc/wsRpcClient";
 import { showContextMenuFallback } from "./contextMenuFallback";
+import { confirmInApp } from "./components/AppConfirmDialog";
 import {
   readBrowserClientSettings,
   readBrowserSavedEnvironmentRegistry,
@@ -40,10 +41,7 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         return window.desktopBridge.pickFolder(options);
       },
       confirm: async (message) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.confirm(message);
-        }
-        return window.confirm(message);
+        return confirmInApp(message);
       },
     },
     shell: {
@@ -121,9 +119,11 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
     server: {
       getConfig: () =>
         rpcClient ? rpcClient.server.getConfig() : Promise.reject(unavailableLocalBackendError()),
-      refreshProviders: () =>
+      refreshProviders: (input) =>
         rpcClient
-          ? rpcClient.server.refreshProviders()
+          ? input === undefined
+            ? rpcClient.server.refreshProviders()
+            : rpcClient.server.refreshProviders(input)
           : Promise.reject(unavailableLocalBackendError()),
       upsertKeybinding: (input) =>
         rpcClient
@@ -139,6 +139,74 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.discoverSourceControl()
           : Promise.reject(unavailableLocalBackendError()),
+      codexMcp: {
+        list: (input) =>
+          rpcClient
+            ? rpcClient.server.codexMcp.list(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        add: (input) =>
+          rpcClient
+            ? rpcClient.server.codexMcp.add(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        update: (input) =>
+          rpcClient
+            ? rpcClient.server.codexMcp.update(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        delete: (input) =>
+          rpcClient
+            ? rpcClient.server.codexMcp.delete(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
+      codexAgents: {
+        list: (input) =>
+          rpcClient
+            ? rpcClient.server.codexAgents.list(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
+      codexPlugins: {
+        list: (input) =>
+          rpcClient
+            ? rpcClient.server.codexPlugins.list(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        install: (input) =>
+          rpcClient
+            ? rpcClient.server.codexPlugins.install(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        update: (input) =>
+          rpcClient
+            ? rpcClient.server.codexPlugins.update(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
+      codexAutomations: {
+        list: (input) =>
+          rpcClient
+            ? rpcClient.server.codexAutomations.list(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        save: (input) =>
+          rpcClient
+            ? rpcClient.server.codexAutomations.save(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        delete: (input) =>
+          rpcClient
+            ? rpcClient.server.codexAutomations.delete(input)
+            : Promise.reject(unavailableLocalBackendError()),
+        update: (input) =>
+          rpcClient
+            ? rpcClient.server.codexAutomations.update(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
+      codexUsageHistory: {
+        list: (input) =>
+          rpcClient
+            ? rpcClient.server.codexUsageHistory.list(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
+      cliUpdates: {
+        startCodex: (input) =>
+          rpcClient
+            ? rpcClient.server.cliUpdates.startCodex(input)
+            : Promise.reject(unavailableLocalBackendError()),
+      },
     },
   };
 }

@@ -1,11 +1,15 @@
 import { DownloadIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
-import { isElectron } from "../../env";
+import { isDesktopShell } from "../../env";
 import {
   setDesktopUpdateStateQueryData,
   useDesktopUpdateState,
 } from "../../lib/desktopUpdateReactQuery";
+import {
+  clearDesktopUpdateInstallExpected,
+  markDesktopUpdateInstallExpected,
+} from "../../lib/desktopUpdateInstallState";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   getArm64IntelBuildWarningDescription,
@@ -20,18 +24,19 @@ import {
 } from "../desktopUpdate.logic";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ensureLocalApi } from "../../localApi";
 
 export function SidebarUpdatePill() {
   const queryClient = useQueryClient();
   const state = useDesktopUpdateState().data ?? null;
   const [dismissed, setDismissed] = useState(false);
 
-  const visible = isElectron && shouldShowDesktopUpdateButton(state) && !dismissed;
+  const visible = isDesktopShell && shouldShowDesktopUpdateButton(state) && !dismissed;
   const tooltip = state ? getDesktopUpdateButtonTooltip(state) : "Update available";
   const disabled = isDesktopUpdateButtonDisabled(state);
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
 
-  const showArm64Warning = isElectron && shouldShowArm64IntelBuildWarning(state);
+  const showArm64Warning = isDesktopShell && shouldShowArm64IntelBuildWarning(state);
   const arm64Description =
     state && showArm64Warning ? getArm64IntelBuildWarningDescription(state) : null;
 
@@ -76,12 +81,30 @@ export function SidebarUpdatePill() {
     }
 
     if (action === "install") {
-      const confirmed = window.confirm(getDesktopUpdateInstallConfirmationMessage(state));
-      if (!confirmed) return;
-      void bridge
-        .installUpdate()
+      void ensureLocalApi()
+        .dialogs.confirm(getDesktopUpdateInstallConfirmationMessage(state))
+        .then((confirmed) => {
+          if (!confirmed) return null;
+          markDesktopUpdateInstallExpected();
+          toastManager.add(
+            stackedThreadToast({
+              type: "loading",
+              title: "Installing update",
+              description: "T3 Code is restarting to finish the update.",
+              timeout: 0,
+              data: {
+                hideCopyButton: true,
+              },
+            }),
+          );
+          return bridge.installUpdate();
+        })
         .then((result) => {
+          if (!result) return;
           setDesktopUpdateStateQueryData(queryClient, result.state);
+          if (result.state.errorContext === "install") {
+            clearDesktopUpdateInstallExpected();
+          }
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);
           if (!actionError) return;
@@ -94,6 +117,7 @@ export function SidebarUpdatePill() {
           );
         })
         .catch((error) => {
+          clearDesktopUpdateInstallExpected();
           toastManager.add(
             stackedThreadToast({
               type: "error",
@@ -138,6 +162,11 @@ export function SidebarUpdatePill() {
                     <>
                       <RotateCwIcon className="size-3.5" />
                       <span>Restart to update</span>
+                    </>
+                  ) : state?.status === "installing" ? (
+                    <>
+                      <RotateCwIcon className="size-3.5 animate-spin" />
+                      <span>Installing…</span>
                     </>
                   ) : state?.status === "downloading" ? (
                     <>

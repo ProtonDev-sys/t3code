@@ -49,11 +49,14 @@ function makeSecretStorage(available: boolean): DesktopSecretStorage {
 }
 
 const clientSettings: ClientSettings = {
+  autoCleanupEmptyProjects: false,
+  autoCleanupInactiveThreads: false,
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   diffIgnoreWhitespace: true,
   diffWordWrap: true,
+  showAdvancedProviderSlashCommands: true,
   favorites: [],
   providerModelPreferences: {},
   sidebarProjectGroupingMode: "repository_path",

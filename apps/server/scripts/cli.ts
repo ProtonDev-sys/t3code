@@ -2,6 +2,7 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFs from "node:fs/promises";
 import { Data, Effect, FileSystem, Logger, Option, Path } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -49,6 +50,95 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Comm
       message: `Command exited with non-zero exit code (${exitCode})`,
     });
   }
+});
+
+const copyNodePtyRuntime = Effect.fn("copyNodePtyRuntime")(function* (repoRoot: string) {
+  const path = yield* Path.Path;
+  const sourcePath = path.join(repoRoot, "apps/server/node_modules/node-pty");
+  const targetPath = path.join(repoRoot, "apps/server/dist/node_modules/node-pty");
+  const sourceExists = yield* Effect.tryPromise({
+    try: () => NodeFs.stat(sourcePath),
+    catch: (cause) =>
+      new CliError({
+        message: `Missing node-pty runtime dependency at ${sourcePath}. Run package install first.`,
+        cause,
+      }),
+  }).pipe(Effect.map((stat) => stat.isDirectory()));
+
+  if (!sourceExists) {
+    return yield* new CliError({
+      message: `node-pty runtime dependency is not a directory at ${sourcePath}.`,
+    });
+  }
+
+  yield* Effect.tryPromise({
+    try: () => NodeFs.rm(targetPath, { recursive: true, force: true }),
+    catch: (cause) =>
+      new CliError({
+        message: `Failed to clear bundled node-pty runtime at ${targetPath}.`,
+        cause,
+      }),
+  });
+  yield* Effect.tryPromise({
+    try: () => NodeFs.cp(sourcePath, targetPath, { recursive: true, dereference: true }),
+    catch: (cause) =>
+      new CliError({
+        message: `Failed to copy node-pty runtime dependency to ${targetPath}.`,
+        cause,
+      }),
+  });
+  yield* Effect.log("[cli] Bundled node-pty runtime dependency into dist/node_modules");
+});
+
+const copyClaudeAgentRuntime = Effect.fn("copyClaudeAgentRuntime")(function* (repoRoot: string) {
+  const path = yield* Path.Path;
+  const sourceDir = path.join(repoRoot, "apps/server/node_modules/@anthropic-ai/claude-agent-sdk");
+  const targetDir = path.join(repoRoot, "apps/server/dist");
+  const sourceCli = path.join(sourceDir, "cli.js");
+  const targetCli = path.join(targetDir, "cli.js");
+
+  yield* Effect.tryPromise({
+    try: () => NodeFs.copyFile(sourceCli, targetCli),
+    catch: (cause) =>
+      new CliError({
+        message: `Failed to copy Claude Agent CLI from ${sourceCli}.`,
+        cause,
+      }),
+  });
+
+  for (const fileName of ["manifest.json", "manifest.zst.json"]) {
+    yield* Effect.tryPromise({
+      try: () => NodeFs.copyFile(path.join(sourceDir, fileName), path.join(targetDir, fileName)),
+      catch: (cause) =>
+        new CliError({
+          message: `Failed to copy Claude Agent runtime asset ${fileName}.`,
+          cause,
+        }),
+    });
+  }
+
+  yield* Effect.tryPromise({
+    try: () => NodeFs.rm(path.join(targetDir, "vendor"), { recursive: true, force: true }),
+    catch: (cause) =>
+      new CliError({
+        message: "Failed to clear bundled Claude Agent vendor runtime assets.",
+        cause,
+      }),
+  });
+  yield* Effect.tryPromise({
+    try: () =>
+      NodeFs.cp(path.join(sourceDir, "vendor"), path.join(targetDir, "vendor"), {
+        recursive: true,
+        dereference: true,
+        force: true,
+      }),
+    catch: (cause) =>
+      new CliError({
+        message: "Failed to copy Claude Agent vendor runtime assets.",
+        cause,
+      }),
+  });
+  yield* Effect.log("[cli] Bundled Claude Agent runtime assets into dist");
 });
 
 interface PublishIconBackup {
@@ -151,10 +241,10 @@ const buildCmd = Command.make(
           cwd: serverDir,
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
-          // Windows needs shell mode to resolve `.cmd` shims on PATH.
-          shell: process.platform === "win32",
         }),
       );
+      yield* copyNodePtyRuntime(repoRoot);
+      yield* copyClaudeAgentRuntime(repoRoot);
 
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");

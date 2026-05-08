@@ -57,6 +57,7 @@ import { createEnvironmentConnection, type EnvironmentConnection } from "./conne
 import {
   useStore,
   selectProjectsAcrossEnvironments,
+  selectProjectByRef,
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadsAcrossEnvironments,
@@ -138,6 +139,9 @@ let lastBrowserResumeReconnectAt = Number.NEGATIVE_INFINITY;
 // - Capacity eviction only targets idle cached subscriptions.
 const THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS = 15 * 60 * 1000;
 const MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS = 32;
+const THREAD_DETAIL_PREWARM_INITIAL_DELAY_MS = 1_200;
+const THREAD_DETAIL_PREWARM_INTERVAL_MS = 220;
+const THREAD_DETAIL_PREWARM_RETAIN_MS = 7_500;
 const BROWSER_RESUME_RECONNECT_COOLDOWN_MS = 2_000;
 const NOOP = () => undefined;
 const SSH_HTTP_STATUS_RE = /^\[ssh_http:(\d+)\]\s/u;
@@ -526,6 +530,119 @@ export function retainThreadDetailSubscription(
   };
 }
 
+export function prewarmThreadDetailSubscriptions(
+  refs: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+  }>,
+  options?: {
+    readonly initialDelayMs?: number;
+    readonly intervalMs?: number;
+    readonly retainMs?: number;
+  },
+): () => void {
+  const seenKeys = new Set<string>();
+  const uniqueRefs = refs.filter((ref) => {
+    const key = getThreadDetailSubscriptionKey(ref.environmentId, ref.threadId);
+    if (seenKeys.has(key)) {
+      return false;
+    }
+    seenKeys.add(key);
+    return true;
+  });
+
+  if (uniqueRefs.length === 0) {
+    return NOOP;
+  }
+
+  const initialDelayMs = options?.initialDelayMs ?? THREAD_DETAIL_PREWARM_INITIAL_DELAY_MS;
+  const intervalMs = options?.intervalMs ?? THREAD_DETAIL_PREWARM_INTERVAL_MS;
+  const retainMs = options?.retainMs ?? THREAD_DETAIL_PREWARM_RETAIN_MS;
+  const timeoutIds = new Set<ReturnType<typeof setTimeout>>();
+  const idleCallbackIds = new Set<number>();
+  const releases = new Set<() => void>();
+  let cancelled = false;
+
+  const clearScheduledWork = () => {
+    for (const timeoutId of timeoutIds) {
+      clearTimeout(timeoutId);
+    }
+    timeoutIds.clear();
+
+    if (typeof globalThis.cancelIdleCallback === "function") {
+      for (const idleCallbackId of idleCallbackIds) {
+        globalThis.cancelIdleCallback(idleCallbackId);
+      }
+    }
+    idleCallbackIds.clear();
+  };
+
+  const scheduleTimeout = (callback: () => void, delayMs: number) => {
+    const timeoutId = setTimeout(
+      () => {
+        timeoutIds.delete(timeoutId);
+        callback();
+      },
+      Math.max(0, delayMs),
+    );
+    timeoutIds.add(timeoutId);
+  };
+
+  const scheduleIdle = (callback: () => void, delayMs: number) => {
+    scheduleTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+
+      if (typeof globalThis.requestIdleCallback !== "function") {
+        callback();
+        return;
+      }
+
+      const idleCallbackId = globalThis.requestIdleCallback(
+        () => {
+          idleCallbackIds.delete(idleCallbackId);
+          callback();
+        },
+        { timeout: Math.max(50, intervalMs) },
+      );
+      idleCallbackIds.add(idleCallbackId);
+    }, delayMs);
+  };
+
+  const releaseLater = (release: () => void) => {
+    scheduleTimeout(() => {
+      if (!releases.delete(release)) {
+        return;
+      }
+      release();
+    }, retainMs);
+  };
+
+  const prewarmAt = (index: number) => {
+    if (cancelled || index >= uniqueRefs.length) {
+      return;
+    }
+
+    const ref = uniqueRefs[index]!;
+    const release = retainThreadDetailSubscription(ref.environmentId, ref.threadId);
+    releases.add(release);
+    releaseLater(release);
+    scheduleIdle(() => prewarmAt(index + 1), intervalMs);
+  };
+
+  scheduleIdle(() => prewarmAt(0), initialDelayMs);
+
+  return () => {
+    cancelled = true;
+    clearScheduledWork();
+    for (const release of releases) {
+      release();
+    }
+    releases.clear();
+  };
+}
+
 function emitEnvironmentConnectionRegistryChange() {
   for (const listener of environmentConnectionListeners) {
     listener();
@@ -594,10 +711,11 @@ function findSavedEnvironmentRecordByDesktopSshTarget(
 function buildSavedEnvironmentRegistryById(
   records: ReadonlyArray<SavedEnvironmentRecord>,
 ): Record<EnvironmentId, SavedEnvironmentRecord> {
-  return Object.fromEntries(records.map((record) => [record.environmentId, record])) as Record<
-    EnvironmentId,
-    SavedEnvironmentRecord
-  >;
+  const byId = {} as Record<EnvironmentId, SavedEnvironmentRecord>;
+  for (const record of records) {
+    byId[record.environmentId] = record;
+  }
+  return byId;
 }
 
 type SavedEnvironmentRegistrySnapshot = ReadonlyMap<EnvironmentId, SavedEnvironmentRecord | null>;
@@ -605,12 +723,11 @@ type SavedEnvironmentRegistrySnapshot = ReadonlyMap<EnvironmentId, SavedEnvironm
 function snapshotSavedEnvironmentRegistry(
   environmentIds: ReadonlyArray<EnvironmentId>,
 ): SavedEnvironmentRegistrySnapshot {
-  return new Map(
-    environmentIds.map((environmentId) => [
-      environmentId,
-      getSavedEnvironmentRecord(environmentId) ?? null,
-    ]),
-  );
+  const snapshot = new Map<EnvironmentId, SavedEnvironmentRecord | null>();
+  for (const environmentId of environmentIds) {
+    snapshot.set(environmentId, getSavedEnvironmentRecord(environmentId) ?? null);
+  }
+  return snapshot;
 }
 
 async function persistSavedEnvironmentRegistryRollback(
@@ -786,13 +903,14 @@ function setRuntimeConnected(environmentId: EnvironmentId) {
 }
 
 function setRuntimeDisconnected(environmentId: EnvironmentId, reason?: string | null) {
+  const disconnectedAt = isoNow();
   useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
     connectionState: "disconnected",
-    disconnectedAt: isoNow(),
+    disconnectedAt,
     ...(reason && reason.trim().length > 0
       ? {
           lastError: reason,
-          lastErrorAt: isoNow(),
+          lastErrorAt: disconnectedAt,
         }
       : {}),
   });
@@ -972,12 +1090,19 @@ export function applyEnvironmentThreadDetailEvent(
 }
 
 function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: EnvironmentId) {
-  if (
-    !shouldApplyProjectionEvent({
-      current: readLastAppliedProjectionVersion(environmentId),
-      sequence: event.sequence,
-    })
-  ) {
+  const shouldApplyBySequence = shouldApplyProjectionEvent({
+    current: readLastAppliedProjectionVersion(environmentId),
+    sequence: event.sequence,
+  });
+  const shouldApplyIdentityBackfill =
+    !shouldApplyBySequence &&
+    event.kind === "project-upserted" &&
+    event.project.repositoryIdentity !== null &&
+    event.project.repositoryIdentity !== undefined &&
+    selectProjectByRef(useStore.getState(), scopeProjectRef(environmentId, event.project.id))
+      ?.repositoryIdentity == null;
+
+  if (!shouldApplyBySequence && !shouldApplyIdentityBackfill) {
     return;
   }
 
@@ -991,7 +1116,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
   const previousThread = threadRef ? selectThreadByRef(useStore.getState(), threadRef) : undefined;
 
   useStore.getState().applyShellEvent(event, environmentId);
-  markAppliedProjectionEvent(environmentId, event.sequence);
+  if (shouldApplyBySequence) {
+    markAppliedProjectionEvent(environmentId, event.sequence);
+  }
 
   switch (event.kind) {
     case "project-upserted":

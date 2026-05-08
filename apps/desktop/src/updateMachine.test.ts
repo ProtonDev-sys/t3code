@@ -9,6 +9,7 @@ import {
   reduceDesktopUpdateStateOnDownloadProgress,
   reduceDesktopUpdateStateOnDownloadStart,
   reduceDesktopUpdateStateOnInstallFailure,
+  reduceDesktopUpdateStateOnInstallStart,
   reduceDesktopUpdateStateOnNoUpdate,
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine.ts";
@@ -93,6 +94,22 @@ describe("updateMachine", () => {
     expect(failedInstall.status).toBe("downloaded");
     expect(failedInstall.errorContext).toBe("install");
     expect(failedInstall.canRetry).toBe(true);
+  });
+
+  it("tracks an install in progress without exposing retry state", () => {
+    const state = reduceDesktopUpdateStateOnInstallStart({
+      ...createInitialDesktopUpdateState("1.0.0", runtimeInfo, "latest"),
+      enabled: true,
+      status: "downloaded",
+      availableVersion: "1.1.0",
+      downloadedVersion: "1.1.0",
+      canRetry: true,
+    });
+
+    expect(state.status).toBe("installing");
+    expect(state.message).toBe("Installing update and restarting T3 Code.");
+    expect(state.errorContext).toBeNull();
+    expect(state.canRetry).toBe(false);
   });
 
   it("clears stale download state when no update is available", () => {

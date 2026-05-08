@@ -1,7 +1,25 @@
-import { Cause, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
+import {
+  Cause,
+  Duration,
+  Effect,
+  Equal,
+  Layer,
+  Option,
+  PubSub,
+  Queue,
+  Ref,
+  Schema,
+  Stream,
+} from "effect";
 import {
   type AuthAccessStreamEvent,
   AuthSessionId,
+  CliUpdateError,
+  type CliUpdateState,
+  type CliUpdateStreamEvent,
+  CodexAgentConfigError,
+  CodexExtensionsConfigError,
+  CodexMcpConfigError,
   CommandId,
   EventId,
   type OrchestrationCommand,
@@ -14,6 +32,7 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
+  ProviderDriverKind,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
@@ -28,12 +47,33 @@ import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import {
+  addCodexMcpServer,
+  deleteCodexMcpServer,
+  listCodexMcpServers,
+  updateCodexMcpServer,
+} from "./codexMcpConfig.ts";
+import { listCodexAgents } from "./codexAgentsConfig.ts";
+import { resolveCodexCliUpdateLaunch, runCodexCliUpdate } from "./codexCliUpdater.ts";
+import {
+  listCodexAutomations,
+  listCodexPlugins,
+  listCodexUsageHistory,
+  deleteCodexAutomation,
+  installCodexPlugin,
+  saveCodexAutomation,
+  updateCodexAutomation,
+  updateCodexPlugin,
+} from "./codexExtensionsConfig.ts";
 import { ServerConfig } from "./config.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionThreadDetailReadOptions,
+} from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   observeRpcEffect,
   observeRpcStream,
@@ -75,6 +115,42 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 
+function toCodexMcpRpcError(value: unknown): CodexMcpConfigError {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "_tag" in value &&
+    value._tag === "CodexMcpConfigError"
+  ) {
+    return value as CodexMcpConfigError;
+  }
+  return new CodexMcpConfigError({ detail: String(value) });
+}
+
+function toCodexAgentRpcError(value: unknown): CodexAgentConfigError {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "_tag" in value &&
+    value._tag === "CodexAgentConfigError"
+  ) {
+    return value as CodexAgentConfigError;
+  }
+  return new CodexAgentConfigError({ detail: String(value) });
+}
+
+function toCodexExtensionsRpcError(value: unknown): CodexExtensionsConfigError {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "_tag" in value &&
+    value._tag === "CodexExtensionsConfigError"
+  ) {
+    return value as CodexExtensionsConfigError;
+  }
+  return new CodexExtensionsConfigError({ detail: String(value) });
+}
+
 function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
   OrchestrationEvent,
   {
@@ -98,6 +174,47 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
+const SHELL_REPOSITORY_IDENTITY_BACKFILL_LIMIT = 64;
+const INITIAL_THREAD_DETAIL_MESSAGE_LIMIT = 80;
+const INITIAL_THREAD_DETAIL_PROPOSED_PLAN_LIMIT = 20;
+const INITIAL_THREAD_DETAIL_ACTIVITY_LIMIT = 80;
+const INITIAL_THREAD_DETAIL_CHECKPOINT_LIMIT = 80;
+const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function cliUpdateMessage(value: unknown): string {
+  if (value instanceof Error && value.message.trim().length > 0) {
+    return value.message;
+  }
+  const text = String(value).trim();
+  return text.length > 0 ? text : "Unknown CLI update error.";
+}
+
+function summarizeCliUpdateFailure(input: {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stderr: string;
+  readonly stdout: string;
+}): string {
+  const output = (input.stderr || input.stdout).trim();
+  if (output.length > 0) {
+    return output;
+  }
+  if (input.signal) {
+    return `Codex update stopped by signal ${input.signal}.`;
+  }
+  return `Codex update exited with code ${input.code ?? "unknown"}.`;
+}
+
+function codexCliUpdateKey(state: Pick<CliUpdateState, "providerInstanceId" | "targetVersion">) {
+  return `${state.providerInstanceId}:${state.targetVersion ?? "latest"}`;
+}
+
+const cliUpdatesRef = Effect.runSync(Ref.make<ReadonlyMap<string, CliUpdateState>>(new Map()));
+const cliUpdatesPubSub = Effect.runSync(PubSub.unbounded<CliUpdateStreamEvent>());
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -557,6 +674,108 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      const publishCliUpdateState = (state: CliUpdateState) =>
+        Ref.update(cliUpdatesRef, (updates) => {
+          const next = new Map(updates);
+          next.set(codexCliUpdateKey(state), state);
+          return next;
+        }).pipe(
+          Effect.andThen(PubSub.publish(cliUpdatesPubSub, { version: 1 as const, state })),
+          Effect.asVoid,
+        );
+
+      const startCodexCliUpdate = (input: {
+        readonly providerInstanceId: CliUpdateState["providerInstanceId"];
+        readonly currentVersion: string | null;
+        readonly targetVersion: string | null;
+      }) =>
+        Effect.gen(function* () {
+          const running = yield* Ref.get(cliUpdatesRef).pipe(
+            Effect.map((updates) =>
+              Array.from(updates.values()).find(
+                (state) =>
+                  state.providerInstanceId === input.providerInstanceId &&
+                  state.targetVersion === input.targetVersion &&
+                  state.status === "running",
+              ),
+            ),
+          );
+          if (running) {
+            return { started: false, state: running };
+          }
+
+          const settings = yield* serverSettings.getSettings;
+          const launch = yield* Effect.try({
+            try: () => resolveCodexCliUpdateLaunch(settings, input),
+            catch: (error) =>
+              Schema.is(CliUpdateError)(error)
+                ? error
+                : new CliUpdateError({ detail: cliUpdateMessage(error) }),
+          });
+          const state = {
+            id: `codex-cli-update:${input.providerInstanceId}:${crypto.randomUUID()}`,
+            providerInstanceId: input.providerInstanceId,
+            driver: CODEX_DRIVER_KIND,
+            ...(launch.displayName ? { displayName: launch.displayName } : {}),
+            status: "running" as const,
+            currentVersion: input.currentVersion,
+            targetVersion: input.targetVersion,
+            startedAt: nowIso(),
+            finishedAt: null,
+            message: "Codex CLI update is running in the background.",
+          } satisfies CliUpdateState;
+
+          yield* publishCliUpdateState(state);
+          const finish = (nextState: CliUpdateState) =>
+            publishCliUpdateState(nextState).pipe(
+              Effect.andThen(providerRegistry.refreshInstance(input.providerInstanceId)),
+              Effect.ignoreCause({ log: true }),
+            );
+
+          yield* Effect.tryPromise({
+            try: () => runCodexCliUpdate(launch),
+            catch: (error) =>
+              Schema.is(CliUpdateError)(error)
+                ? error
+                : new CliUpdateError({ detail: cliUpdateMessage(error) }),
+          }).pipe(
+            Effect.flatMap((result) => {
+              if (result.code === 0) {
+                return finish({
+                  ...state,
+                  status: "succeeded",
+                  finishedAt: nowIso(),
+                  message: "Codex CLI update finished.",
+                });
+              }
+              return finish({
+                ...state,
+                status: "failed",
+                finishedAt: nowIso(),
+                message: summarizeCliUpdateFailure(result),
+              });
+            }),
+            Effect.catch((error: unknown) =>
+              finish({
+                ...state,
+                status: "failed",
+                finishedAt: nowIso(),
+                message: cliUpdateMessage(error),
+              }),
+            ),
+            Effect.ignoreCause({ log: true }),
+            Effect.forkDetach,
+          );
+
+          return { started: true, state };
+        }).pipe(
+          Effect.mapError((error) =>
+            Schema.is(CliUpdateError)(error)
+              ? error
+              : new CliUpdateError({ detail: cliUpdateMessage(error) }),
+          ),
+        );
+
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
@@ -698,13 +917,47 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
                 ),
               );
+              const identityBackfillProjects =
+                snapshot.projects.length <= SHELL_REPOSITORY_IDENTITY_BACKFILL_LIMIT
+                  ? snapshot.projects
+                  : snapshot.projects
+                      .toSorted(
+                        (left, right) =>
+                          right.updatedAt.localeCompare(left.updatedAt) ||
+                          right.createdAt.localeCompare(left.createdAt) ||
+                          right.id.localeCompare(left.id),
+                      )
+                      .slice(0, SHELL_REPOSITORY_IDENTITY_BACKFILL_LIMIT);
+              const repositoryIdentityBackfillStream = Stream.fromIterable(
+                identityBackfillProjects,
+              ).pipe(
+                Stream.mapEffect((project) =>
+                  repositoryIdentityResolver.resolve(project.workspaceRoot).pipe(
+                    Effect.map((repositoryIdentity) =>
+                      repositoryIdentity === null
+                        ? Option.none<OrchestrationShellStreamEvent>()
+                        : Option.some({
+                            kind: "project-upserted" as const,
+                            sequence: snapshot.snapshotSequence,
+                            project: {
+                              ...project,
+                              repositoryIdentity,
+                            },
+                          }),
+                    ),
+                  ),
+                ),
+                Stream.flatMap((event) =>
+                  Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                ),
+              );
 
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot,
                 }),
-                liveStream,
+                Stream.merge(repositoryIdentityBackfillStream, liveStream),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -712,51 +965,94 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
-            Effect.gen(function* () {
-              const [threadDetail, snapshotSequence] = yield* Effect.all([
-                projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
+            Effect.sync(() => {
+              const loadThreadSnapshot = (options?: ProjectionThreadDetailReadOptions) =>
+                Effect.all([
+                  projectionSnapshotQuery.getThreadDetailById(input.threadId, options).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to load thread ${input.threadId}`,
+                          cause,
+                        }),
+                    ),
                   ),
-                ),
-                orchestrationEngine
-                  .getReadModel()
-                  .pipe(Effect.map((readModel) => readModel.snapshotSequence)),
-              ]);
+                  projectionSnapshotQuery.getSnapshotSequence().pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: "Failed to load projection snapshot sequence",
+                          cause,
+                        }),
+                    ),
+                  ),
+                ]).pipe(
+                  Effect.flatMap(([threadDetail, snapshotSequence]) => {
+                    if (Option.isNone(threadDetail)) {
+                      return Effect.fail(
+                        new OrchestrationGetSnapshotError({
+                          message: `Thread ${input.threadId} was not found`,
+                          cause: input.threadId,
+                        }),
+                      );
+                    }
+                    return Effect.succeed({
+                      kind: "snapshot" as const,
+                      snapshot: {
+                        snapshotSequence,
+                        thread: threadDetail.value,
+                      },
+                    });
+                  }),
+                );
 
-              if (Option.isNone(threadDetail)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
+              const toThreadDetailStream = <E, R>(
+                events: Stream.Stream<OrchestrationEvent, E, R>,
+              ) =>
+                events.pipe(
+                  Stream.filter(
+                    (event) =>
+                      event.aggregateKind === "thread" &&
+                      event.aggregateId === input.threadId &&
+                      isThreadDetailEvent(event),
+                  ),
+                  Stream.map((event) => ({
+                    kind: "event" as const,
+                    event,
+                  })),
+                );
 
-              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
-                Stream.filter(
-                  (event) =>
-                    event.aggregateKind === "thread" &&
-                    event.aggregateId === input.threadId &&
-                    isThreadDetailEvent(event),
-                ),
-                Stream.map((event) => ({
-                  kind: "event" as const,
-                  event,
-                })),
-              );
-
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: {
-                    snapshotSequence,
-                    thread: threadDetail.value,
-                  },
+              return Stream.fromEffect(
+                loadThreadSnapshot({
+                  messageLimit: INITIAL_THREAD_DETAIL_MESSAGE_LIMIT,
+                  proposedPlanLimit: INITIAL_THREAD_DETAIL_PROPOSED_PLAN_LIMIT,
+                  activityLimit: INITIAL_THREAD_DETAIL_ACTIVITY_LIMIT,
+                  checkpointLimit: INITIAL_THREAD_DETAIL_CHECKPOINT_LIMIT,
                 }),
-                liveStream,
+              ).pipe(
+                Stream.flatMap((snapshotItem) => {
+                  const snapshotSequence = snapshotItem.snapshot.snapshotSequence;
+                  const replayStream = toThreadDetailStream(
+                    orchestrationEngine.readEvents(snapshotSequence).pipe(
+                      Stream.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: "Failed to replay thread detail events",
+                            cause,
+                          }),
+                      ),
+                    ),
+                  );
+                  const liveStream = toThreadDetailStream(
+                    orchestrationEngine.streamDomainEvents.pipe(
+                      Stream.filter((event) => event.sequence > snapshotSequence),
+                    ),
+                  );
+                  return Stream.concat(
+                    Stream.make(snapshotItem),
+                    Stream.concat(replayStream, liveStream),
+                  );
+                }),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -807,6 +1103,147 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverCodexMcpList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexMcpList,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => listCodexMcpServers(settings, input)),
+              Effect.mapError(toCodexMcpRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexMcpAdd]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexMcpAdd,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => addCodexMcpServer(settings, input)),
+              Effect.tap(() =>
+                input.providerInstanceId
+                  ? providerRegistry.refreshInstance(input.providerInstanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.mapError(toCodexMcpRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexMcpUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexMcpUpdate,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => updateCodexMcpServer(settings, input)),
+              Effect.tap(() =>
+                input.providerInstanceId
+                  ? providerRegistry.refreshInstance(input.providerInstanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.mapError(toCodexMcpRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexMcpDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexMcpDelete,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => deleteCodexMcpServer(settings, input)),
+              Effect.tap(() =>
+                input.providerInstanceId
+                  ? providerRegistry.refreshInstance(input.providerInstanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.mapError(toCodexMcpRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexAgentsList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexAgentsList,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => listCodexAgents(settings, input)),
+              Effect.mapError(toCodexAgentRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexPluginsList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexPluginsList,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => listCodexPlugins(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexPluginsUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexPluginsUpdate,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => updateCodexPlugin(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexPluginsInstall]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexPluginsInstall,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => installCodexPlugin(settings, input)),
+              Effect.tap(() =>
+                input.providerInstanceId
+                  ? providerRegistry.refreshInstance(input.providerInstanceId)
+                  : providerRegistry.refresh(),
+              ),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexAutomationsList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexAutomationsList,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => listCodexAutomations(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexAutomationsUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexAutomationsUpdate,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => updateCodexAutomation(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexAutomationsSave]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexAutomationsSave,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => saveCodexAutomation(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexAutomationsDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexAutomationsDelete,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => deleteCodexAutomation(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCodexUsageHistoryList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCodexUsageHistoryList,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((settings) => listCodexUsageHistory(settings, input)),
+              Effect.mapError(toCodexExtensionsRpcError),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCliUpdatesStartCodex]: (input) =>
+          observeRpcEffect(WS_METHODS.serverCliUpdatesStartCodex, startCodexCliUpdate(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -1023,6 +1460,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
             Effect.gen(function* () {
+              const initialConfig = yield* loadServerConfig;
               const keybindingsUpdates = keybindings.streamChanges.pipe(
                 Stream.map((event) => ({
                   version: 1 as const,
@@ -1041,6 +1479,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 })),
                 Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
               );
+              const refreshedProviderStatuses = Stream.fromEffect(
+                providerRegistry.refresh().pipe(
+                  Effect.map((providers) =>
+                    Equal.equals(initialConfig.providers, providers)
+                      ? null
+                      : {
+                          version: 1 as const,
+                          type: "providerStatuses" as const,
+                          payload: { providers },
+                        },
+                  ),
+                  Effect.catchCause((cause) =>
+                    Effect.logError("provider registry initial refresh failed", {
+                      cause: Cause.pretty(cause),
+                    }).pipe(Effect.as(null)),
+                  ),
+                ),
+              ).pipe(Stream.filter((event) => event !== null));
               const settingsUpdates = serverSettings.streamChanges.pipe(
                 Stream.map((settings) => redactServerSettingsForClient(settings)),
                 Stream.map((settings) => ({
@@ -1050,20 +1506,19 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 })),
               );
 
-              yield* providerRegistry
-                .refresh()
-                .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
-
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                Stream.merge(
+                  Stream.merge(refreshedProviderStatuses, providerStatuses),
+                  settingsUpdates,
+                ),
               );
 
               return Stream.concat(
                 Stream.make({
                   version: 1 as const,
                   type: "snapshot" as const,
-                  config: yield* loadServerConfig,
+                  config: initialConfig,
                 }),
                 liveUpdates,
               );
@@ -1116,6 +1571,22 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               );
             }),
             { "rpc.aggregate": "auth" },
+          ),
+        [WS_METHODS.subscribeCliUpdates]: (_input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.subscribeCliUpdates,
+            Effect.gen(function* () {
+              const snapshot = yield* Ref.get(cliUpdatesRef);
+              const snapshotEvents = Array.from(snapshot.values(), (state) => ({
+                version: 1 as const,
+                state,
+              }));
+              return Stream.concat(
+                Stream.fromIterable(snapshotEvents),
+                Stream.fromPubSub(cliUpdatesPubSub),
+              );
+            }),
+            { "rpc.aggregate": "server" },
           ),
       });
     }),

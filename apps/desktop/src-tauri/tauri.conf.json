@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "T3 Code (Alpha)",
+  "version": "0.0.22",
+  "identifier": "com.t3tools.t3code",
+  "mainBinaryName": "t3code",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devUrl": "http://127.0.0.1:5733",
+    "frontendDist": "../../server/dist/client"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["desktop"]
+    },
+    "windows": []
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": ""
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["../resources/icon.png", "../resources/icon.ico", "../resources/icon.icns"],
+    "resources": {
+      "../../desktop/dist": "apps/desktop/dist",
+      "../../server/dist": "apps/server/dist"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/nsis/installer-hooks.nsh"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    }
+  }
+}

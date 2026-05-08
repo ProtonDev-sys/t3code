@@ -12,8 +12,13 @@ import {
 } from "../rpc/wsConnectionState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
+import {
+  clearDesktopUpdateInstallExpected,
+  isDesktopUpdateInstallExpected,
+} from "../lib/desktopUpdateInstallState";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
+const TRANSIENT_RECONNECT_TOAST_DELAY_MS = 1_200;
 type WsAutoReconnectTrigger = "focus" | "online";
 
 const connectionTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -88,6 +93,34 @@ function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): st
   const thresholdSeconds = Math.round((requests[0]?.thresholdMs ?? 0) / 1000);
 
   return `${count} request${count === 1 ? "" : "s"} waiting longer than ${thresholdSeconds}s.`;
+}
+
+function hasDisconnectLastedLongEnough(
+  disconnectedAt: string | null,
+  nowMs: number,
+  minimumMs = TRANSIENT_RECONNECT_TOAST_DELAY_MS,
+): boolean {
+  if (!disconnectedAt) {
+    return false;
+  }
+  const disconnectedAtMs = new Date(disconnectedAt).getTime();
+  return Number.isFinite(disconnectedAtMs) && nowMs - disconnectedAtMs >= minimumMs;
+}
+
+function wasDisconnectVisibleLongEnough(
+  disconnectedAt: string | null,
+  connectedAt: string | null,
+): boolean {
+  if (!disconnectedAt || !connectedAt) {
+    return false;
+  }
+  const disconnectedAtMs = new Date(disconnectedAt).getTime();
+  const connectedAtMs = new Date(connectedAt).getTime();
+  return (
+    Number.isFinite(disconnectedAtMs) &&
+    Number.isFinite(connectedAtMs) &&
+    connectedAtMs - disconnectedAtMs >= TRANSIENT_RECONNECT_TOAST_DELAY_MS
+  );
 }
 
 function SlowRpcAckRequestDetails({ requests }: { requests: ReadonlyArray<SlowRpcAckRequest> }) {
@@ -221,7 +254,8 @@ export function WebSocketConnectionCoordinator() {
   }, []);
 
   useEffect(() => {
-    if (status.reconnectPhase !== "waiting" || status.nextRetryAt === null) {
+    const uiState = getWsConnectionUiState(status);
+    if (status.reconnectPhase !== "waiting" && uiState !== "reconnecting") {
       return;
     }
 
@@ -233,7 +267,7 @@ export function WebSocketConnectionCoordinator() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [status.nextRetryAt, status.reconnectPhase]);
+  }, [status]);
 
   useEffect(() => {
     if (
@@ -271,9 +305,16 @@ export function WebSocketConnectionCoordinator() {
     const uiState = getWsConnectionUiState(status);
     const previousUiState = previousUiStateRef.current;
     const previousDisconnectedAt = previousDisconnectedAtRef.current;
-    const shouldShowReconnectToast = status.hasConnected && uiState === "reconnecting";
-    const shouldShowOfflineToast = uiState === "offline" && status.disconnectedAt !== null;
-    const shouldShowExhaustedToast = status.hasConnected && status.reconnectPhase === "exhausted";
+    const desktopUpdateInstallExpected = isDesktopUpdateInstallExpected(nowMs);
+    const shouldShowReconnectToast =
+      !desktopUpdateInstallExpected &&
+      status.hasConnected &&
+      uiState === "reconnecting" &&
+      hasDisconnectLastedLongEnough(status.disconnectedAt, nowMs);
+    const shouldShowOfflineToast =
+      !desktopUpdateInstallExpected && uiState === "offline" && status.disconnectedAt !== null;
+    const shouldShowExhaustedToast =
+      !desktopUpdateInstallExpected && status.hasConnected && status.reconnectPhase === "exhausted";
 
     if (
       toastResetTimerRef.current !== null &&
@@ -338,8 +379,9 @@ export function WebSocketConnectionCoordinator() {
     if (
       uiState === "connected" &&
       (previousUiState === "offline" || previousUiState === "reconnecting") &&
-      previousDisconnectedAt !== null
+      wasDisconnectVisibleLongEnough(previousDisconnectedAt, status.connectedAt)
     ) {
+      clearDesktopUpdateInstallExpected();
       const successToast = {
         description: describeRecoveredToast(previousDisconnectedAt, status.connectedAt),
         title: buildRecoveredTitle(status),

@@ -33,6 +33,8 @@ const makeStubInstance = (
     },
     displayName: undefined,
     enabled: true,
+    mcpEnabled: true,
+    customAgents: [],
     snapshot: {} as ProviderInstance["snapshot"],
     adapter: {} as ProviderInstance["adapter"],
     textGeneration,

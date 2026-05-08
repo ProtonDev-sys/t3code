@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert, live } from "@effect/vitest";
 import { Effect, Exit, Layer, PubSub, Ref, Schema, Scope, Sink, Stream } from "effect";
@@ -19,6 +21,7 @@ import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import { CODEX_SLASH_COMMANDS } from "./CodexSlashCommands.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
@@ -274,14 +277,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
           assert.strictEqual(status.auth.type, "chatgpt");
           assert.strictEqual(status.auth.label, "ChatGPT Pro 20x Subscription");
           assert.strictEqual(status.auth.email, "test@example.com");
-          assert.deepStrictEqual(status.models, [
-            {
-              slug: "gpt-live-codex",
-              name: "GPT Live Codex",
-              isCustom: false,
-              capabilities: codexModelCapabilities,
-            },
-          ]);
+          assert.deepStrictEqual(status.models[0], {
+            slug: "gpt-live-codex",
+            name: "GPT Live Codex",
+            isCustom: false,
+            capabilities: codexModelCapabilities,
+          });
+          assert.ok(
+            status.models.some((model) => model.slug === "gpt-5.4"),
+            "Expected Codex fallback models to keep GPT-5.4 visible before or after live refresh.",
+          );
+          assert.ok(
+            status.models.some((model) => model.slug === "gpt-5.5"),
+            "Expected Codex fallback models to keep GPT-5.5 visible before or after live refresh.",
+          );
           assert.deepStrictEqual(status.skills, [
             {
               name: "github:gh-fix-ci",
@@ -291,6 +300,72 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
               shortDescription: "Debug failing GitHub Actions checks",
             },
           ]);
+          assert.deepStrictEqual(
+            status.slashCommands.map((command) => command.name),
+            CODEX_SLASH_COMMANDS.map((command) => command.name),
+          );
+          assert.ok(status.slashCommands.some((command) => command.name === "goal"));
+        }),
+      );
+
+      it.effect("includes Codex account rate limits in provider usage", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    limitId: "codex",
+                    limitName: "Codex",
+                    planType: "plus",
+                    primary: {
+                      usedPercent: 13,
+                      resetsAt: 1_777_777_777,
+                      windowDurationMins: 300,
+                    },
+                  },
+                  rateLimitsByLimitId: {
+                    codex: {
+                      limitId: "codex",
+                      limitName: "Codex",
+                      planType: "plus",
+                      primary: {
+                        usedPercent: 13,
+                        resetsAt: 1_777_777_777,
+                        windowDurationMins: 300,
+                      },
+                    },
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.strictEqual(status.usage?.checkedAt, status.checkedAt);
+          assert.deepStrictEqual(status.usage?.rateLimits, {
+            rateLimits: {
+              limitId: "codex",
+              limitName: "Codex",
+              planType: "plus",
+              primary: {
+                usedPercent: 13,
+                resetsAt: 1_777_777_777,
+                windowDurationMins: 300,
+              },
+            },
+            rateLimitsByLimitId: {
+              codex: {
+                limitId: "codex",
+                limitName: "Codex",
+                planType: "plus",
+                primary: {
+                  usedPercent: 13,
+                  resetsAt: 1_777_777_777,
+                  windowDurationMins: 300,
+                },
+              },
+            },
+          });
         }),
       );
 
@@ -526,6 +601,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
             },
             displayName: undefined,
             enabled: true,
+            mcpEnabled: true,
+            customAgents: [],
             snapshot: {
               getSnapshot: Effect.succeed(cachedProvider),
               refresh: Effect.die(new Error("simulated refresh failure")),
@@ -611,6 +688,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
             },
             displayName: undefined,
             enabled: true,
+            mcpEnabled: true,
+            customAgents: [],
             snapshot: {
               getSnapshot: Effect.succeed(provider),
               refresh: Effect.succeed(provider),
@@ -1029,6 +1108,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "claudeAgent",
                 "codex",
+                "copilot",
                 "cursor",
                 "opencode",
               ]);
@@ -1258,6 +1338,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
 
       it.effect("runs Claude status probes with the configured Claude HOME", () => {
         const claudeHome = "/tmp/t3code-claude-home";
+        const expectedClaudeHome = path.resolve(claudeHome);
         const recorded = recordingMockSpawnerLayer((args) => {
           const joined = args.join(" ");
           if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
@@ -1281,7 +1362,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.HOME),
-            [claudeHome],
+            [expectedClaudeHome],
           );
         }).pipe(Effect.provide(recorded.layer));
       });

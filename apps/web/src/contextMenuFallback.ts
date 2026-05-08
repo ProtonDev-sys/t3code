@@ -15,7 +15,7 @@ function clampMenuPosition(menu: HTMLDivElement, preferredLeft: number, preferre
 }
 
 /**
- * Imperative DOM-based context menu for non-Electron environments.
+ * Imperative DOM-based context menu for environments without a native menu bridge.
  * Supports nested submenus and resolves with the clicked leaf item id.
  */
 export function showContextMenuFallback<T extends string>(

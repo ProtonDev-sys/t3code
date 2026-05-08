@@ -107,6 +107,8 @@ function createProviderServiceHarness() {
         driverKind,
         displayName: undefined,
         enabled: true,
+        mcpEnabled: true,
+        customAgents: [],
         continuationIdentity: {
           driverKind,
           continuationKey: `${driverKind}:instance:${instanceId}`,
@@ -223,8 +225,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provide(RepositoryIdentityResolverLive),
+      Layer.provide(SqlitePersistenceMemory),
+    );
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -483,6 +490,41 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: new Date().toISOString(),
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-midturn-lifecycle"),
+      status: "completed",
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
+    );
+  });
+
+  it("accepts thread-scoped turn completion when the runtime omits the turn id", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-thread-scoped-completion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-thread-scoped-completion"),
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-thread-scoped-completion",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-thread-scoped-completion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
       status: "completed",
     });
 
@@ -2606,6 +2648,7 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(usageActivity).toBeDefined();
     expect(usageActivity?.payload).toMatchObject({
+      provider: "codex",
       usedTokens: 1075,
       totalProcessedTokens: 10_200,
       maxTokens: 128_000,
@@ -2615,6 +2658,59 @@ describe("ProviderRuntimeIngestion", () => {
       reasoningOutputTokens: 25,
       lastUsedTokens: 1075,
       compactsAutomatically: true,
+    });
+  });
+
+  it("projects Codex account usage into normalized thread activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-account-rate-limits-updated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        rateLimits: {
+          rateLimitsByLimitId: {
+            codex: {
+              limitId: "codex",
+              limitName: "Codex",
+              planType: "plus",
+              primary: {
+                usedPercent: 42,
+                windowDurationMins: 300,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "account.rate-limits.updated",
+      ),
+    );
+
+    const usageActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "account.rate-limits.updated",
+    );
+    expect(usageActivity).toBeDefined();
+    expect(usageActivity?.summary).toBe("Codex usage updated");
+    expect(usageActivity?.payload).toMatchObject({
+      provider: "codex",
+      rateLimits: {
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: "codex",
+            primary: {
+              usedPercent: 42,
+            },
+          },
+        },
+      },
     });
   });
 
@@ -2657,6 +2753,7 @@ describe("ProviderRuntimeIngestion", () => {
       (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
     );
     expect(usageActivity?.payload).toMatchObject({
+      provider: "codex",
       usedTokens: 126,
       totalProcessedTokens: 11_839,
       maxTokens: 258_400,
@@ -2707,6 +2804,7 @@ describe("ProviderRuntimeIngestion", () => {
       (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
     );
     expect(usageActivity?.payload).toMatchObject({
+      provider: "claudeAgent",
       usedTokens: 31_251,
       lastUsedTokens: 31_251,
       maxTokens: 200_000,

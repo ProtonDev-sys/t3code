@@ -9,6 +9,7 @@ import { resolveWebIconOverrides, type WebAssetBrand } from "./lib/brand-assets.
 const WEB_ASSET_BRANDS = [
   "development",
   "production",
+  "nightly",
 ] as const satisfies ReadonlyArray<WebAssetBrand>;
 
 export const applyWebBrandAssets = Effect.fn("applyWebBrandAssets")(function* (

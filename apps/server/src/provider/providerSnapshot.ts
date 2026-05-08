@@ -7,10 +7,17 @@ import type {
   ServerProviderSlashCommand,
   ServerProviderModel,
   ServerProviderState,
+  ProviderCustomAgent,
+  ProviderOptionDescriptor,
 } from "@t3tools/contracts";
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { createModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+import {
+  customAgentOptionValue,
+  DEFAULT_PROVIDER_AGENT_OPTION_VALUE,
+  PROVIDER_AGENT_OPTION_ID,
+} from "@t3tools/shared/customAgents";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
@@ -29,6 +36,7 @@ export interface ProviderProbeResult {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
   readonly message?: string;
+  readonly usage?: ServerProvider["usage"];
 }
 
 export interface ServerProviderPresentation {
@@ -138,6 +146,87 @@ export function providerModelsFromSettings(
   return [...resolvedBuiltInModels, ...customEntries];
 }
 
+function activeProviderCustomAgents(
+  customAgents: ReadonlyArray<ProviderCustomAgent> | undefined,
+): ReadonlyArray<ProviderCustomAgent> {
+  return (customAgents ?? []).filter(
+    (agent) =>
+      agent.enabled !== false &&
+      agent.id.trim().length > 0 &&
+      agent.name.trim().length > 0 &&
+      agent.instructions.trim().length > 0,
+  );
+}
+
+function withCustomAgentDescriptor(
+  descriptor: ProviderOptionDescriptor | undefined,
+  customAgents: ReadonlyArray<ProviderCustomAgent>,
+): ProviderOptionDescriptor {
+  const customOptions = customAgents.map((agent) => ({
+    id: customAgentOptionValue(agent.id),
+    label: agent.name,
+    ...(agent.description ? { description: agent.description } : {}),
+  }));
+
+  if (descriptor?.type === "select") {
+    const seen = new Set(descriptor.options.map((option) => option.id));
+    return {
+      ...descriptor,
+      options: [
+        ...descriptor.options,
+        ...customOptions.filter((option) => {
+          if (seen.has(option.id)) {
+            return false;
+          }
+          seen.add(option.id);
+          return true;
+        }),
+      ],
+    };
+  }
+
+  return {
+    id: PROVIDER_AGENT_OPTION_ID,
+    label: "Agent",
+    type: "select",
+    currentValue: DEFAULT_PROVIDER_AGENT_OPTION_VALUE,
+    options: [
+      {
+        id: DEFAULT_PROVIDER_AGENT_OPTION_VALUE,
+        label: "Default",
+        isDefault: true,
+      },
+      ...customOptions,
+    ],
+  };
+}
+
+export function providerModelsWithCustomAgents(input: {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly customAgents: ReadonlyArray<ProviderCustomAgent> | undefined;
+}): ReadonlyArray<ServerProviderModel> {
+  const customAgents = activeProviderCustomAgents(input.customAgents);
+  if (customAgents.length === 0) {
+    return input.models;
+  }
+
+  return input.models.map((model) => {
+    const descriptors = model.capabilities?.optionDescriptors ?? [];
+    const agentDescriptor = descriptors.find(
+      (descriptor) => descriptor.id === PROVIDER_AGENT_OPTION_ID,
+    );
+    const nextAgentDescriptor = withCustomAgentDescriptor(agentDescriptor, customAgents);
+    const nextDescriptors = [
+      ...descriptors.filter((descriptor) => descriptor.id !== PROVIDER_AGENT_OPTION_ID),
+      nextAgentDescriptor,
+    ];
+    return {
+      ...model,
+      capabilities: createModelCapabilities({ optionDescriptors: nextDescriptors }),
+    };
+  });
+}
+
 export function buildSelectOptionDescriptor(input: {
   readonly id: string;
   readonly label: string;
@@ -203,6 +292,7 @@ export function buildServerProvider(input: {
     auth: input.probe.auth,
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.probe.usage ? { usage: input.probe.usage } : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],

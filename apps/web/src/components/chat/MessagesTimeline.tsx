@@ -283,6 +283,10 @@ type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
 type TimelineRow = MessagesTimelineRow;
 
+function isSubagentWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return workEntry.itemType === "collab_agent_tool_call";
+}
+
 function TimelineRowContent({ row }: { row: TimelineRow }) {
   const ctx = use(TimelineRowCtx);
 
@@ -291,6 +295,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
       className={cn(
         "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
+        row.kind === "working" ? "pointer-events-none" : null,
       )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
@@ -459,7 +464,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
       )}
 
       {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
+        <div className="pointer-events-none py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
             <span className="inline-flex items-center gap-[3px]">
               <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
@@ -533,14 +538,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
-  const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const primaryEntries = groupedEntries.filter((entry) => !isSubagentWorkEntry(entry));
+  const subagentEntries = groupedEntries.filter(isSubagentWorkEntry);
+  const hasOverflow = primaryEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
     hasOverflow && !isExpanded
-      ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-      : groupedEntries;
-  const hiddenCount = groupedEntries.length - visibleEntries.length;
-  const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
-  const showHeader = hasOverflow || !onlyToolEntries;
+      ? primaryEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
+      : primaryEntries;
+  const hiddenCount = primaryEntries.length - visibleEntries.length;
+  const onlyToolEntries = primaryEntries.every((entry) => entry.tone === "tool");
+  const showHeader =
+    primaryEntries.length > 0 && (hasOverflow || !onlyToolEntries || subagentEntries.length > 0);
   const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
 
   return (
@@ -548,7 +556,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {showHeader && (
         <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
           <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
-            {groupLabel} ({groupedEntries.length})
+            {groupLabel} ({primaryEntries.length})
           </p>
           {hasOverflow && (
             <button
@@ -570,6 +578,64 @@ const WorkGroupSection = memo(function WorkGroupSection({
           />
         ))}
       </div>
+      {subagentEntries.length > 0 && (
+        <SubagentWorkEntriesSection
+          entries={subagentEntries}
+          hasPrimaryEntries={primaryEntries.length > 0}
+          workspaceRoot={workspaceRoot}
+        />
+      )}
+    </div>
+  );
+});
+
+const SubagentWorkEntriesSection = memo(function SubagentWorkEntriesSection({
+  entries,
+  hasPrimaryEntries,
+  workspaceRoot,
+}: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  hasPrimaryEntries: boolean;
+  workspaceRoot: string | undefined;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const preview = formatSubagentWorkEntryPreview(entries[0], workspaceRoot);
+  const previewLabel =
+    preview && entries.length > 1 ? `${preview} +${entries.length - 1} more` : preview;
+
+  return (
+    <div
+      className={cn("pt-1.5", hasPrimaryEntries ? "mt-1.5 border-border/45 border-t" : "mt-0")}
+      data-chat-subagent-work-menu="true"
+    >
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-left text-muted-foreground/65 transition-colors hover:bg-accent/35 hover:text-foreground/80"
+        aria-expanded={isExpanded}
+        data-chat-subagent-work-menu-trigger="true"
+        onClick={() => setIsExpanded((value) => !value)}
+      >
+        <span className="text-[9px] uppercase tracking-[0.16em]">Subagents ({entries.length})</span>
+        <span className="text-[9px] uppercase tracking-[0.12em]">
+          {isExpanded ? "Hide" : "Show"}
+        </span>
+      </button>
+      {!isExpanded && previewLabel ? (
+        <p className="truncate px-1 py-0.5 text-[11px] leading-5 text-muted-foreground/55">
+          {previewLabel}
+        </p>
+      ) : null}
+      {isExpanded ? (
+        <div className="mt-1 space-y-0.5">
+          {entries.map((workEntry) => (
+            <SimpleWorkEntryRow
+              key={`subagent-work-row:${workEntry.id}`}
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -930,6 +996,18 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
   }
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
+}
+
+function formatSubagentWorkEntryPreview(
+  workEntry: TimelineWorkEntry | undefined,
+  workspaceRoot: string | undefined,
+): string | null {
+  if (!workEntry) {
+    return null;
+  }
+  const heading = toolWorkEntryHeading(workEntry);
+  const preview = workEntryPreview(workEntry, workspaceRoot);
+  return preview ? `${heading} - ${preview}` : heading;
 }
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {

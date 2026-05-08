@@ -42,6 +42,7 @@ const PROJECT_ID = asProjectId("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
 const FIXTURE_TURN_ID = "fixture-turn";
 const APPROVAL_REQUEST_ID = asApprovalRequestId("req-approval-1");
+const REAL_CODEX_MODEL = process.env.REAL_CODEX_MODEL ?? "gpt-5.3-codex";
 type IntegrationProvider = ProviderDriverKind;
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
@@ -110,6 +111,51 @@ function withRealCodexHarness<A, E>(
     use,
     (harness) => harness.dispose,
   ).pipe(Effect.provide(NodeServices.layer));
+}
+
+function waitForRealCodexThread(
+  harness: OrchestrationIntegrationHarness,
+  label: string,
+  predicate: Parameters<OrchestrationIntegrationHarness["waitForThread"]>[1],
+  timeoutMs: number,
+) {
+  return harness.waitForThread(THREAD_ID, predicate, timeoutMs).pipe(
+    Effect.catchCause((cause) =>
+      Effect.gen(function* () {
+        const snapshot = yield* harness.snapshotQuery.getSnapshot();
+        const thread = snapshot.threads.find((entry) => entry.id === THREAD_ID);
+        console.error(
+          `[real-codex] ${label} timed out`,
+          JSON.stringify(
+            {
+              session: thread?.session ?? null,
+              latestTurn: thread?.latestTurn ?? null,
+              messages:
+                thread?.messages.slice(-8).map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  text: message.text,
+                  streaming: message.streaming,
+                  turnId: message.turnId,
+                })) ?? [],
+              activities:
+                thread?.activities.slice(-10).map((activity) => ({
+                  kind: activity.kind,
+                  tone: activity.tone,
+                  summary: activity.summary,
+                  turnId: activity.turnId,
+                  payload: activity.payload,
+                })) ?? [],
+              checkpoints: thread?.checkpoints ?? [],
+            },
+            null,
+            2,
+          ),
+        );
+        return yield* Effect.failCause(cause);
+      }),
+    ),
+  );
 }
 
 const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
@@ -261,6 +307,142 @@ it.live("runs a single turn end-to-end and persists checkpoint state in sqlite +
   ),
 );
 
+it.live("sends two sequential Codex test messages end-to-end", () =>
+  withHarness((harness) =>
+    Effect.gen(function* () {
+      yield* seedProjectAndThread(harness);
+
+      yield* harness.adapterHarness!.queueTurnResponseForNextSession({
+        events: [
+          {
+            type: "turn.started",
+            ...runtimeBase("evt-two-message-1", "2026-02-24T10:00:10.000Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+          },
+          {
+            type: "message.delta",
+            ...runtimeBase("evt-two-message-2", "2026-02-24T10:00:10.100Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            delta: "ALPHA\n",
+          },
+          {
+            type: "turn.completed",
+            ...runtimeBase("evt-two-message-3", "2026-02-24T10:00:10.200Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            status: "completed",
+          },
+        ],
+      });
+
+      yield* startTurn({
+        harness,
+        commandId: "cmd-turn-start-two-message-1",
+        messageId: "msg-user-two-message-1",
+        text: "Reply with exactly ALPHA.",
+      });
+
+      yield* harness.waitForReceipt(
+        (receipt): receipt is TurnProcessingQuiescedReceipt =>
+          receipt.type === "turn.processing.quiesced" &&
+          receipt.threadId === THREAD_ID &&
+          receipt.checkpointTurnCount === 1,
+      );
+
+      const afterFirstTurn = yield* harness.waitForThread(
+        THREAD_ID,
+        (entry) =>
+          entry.session?.status === "ready" &&
+          entry.latestTurn?.turnId === "turn-1" &&
+          entry.latestTurn.completedAt !== null &&
+          entry.messages.some(
+            (message) => message.role === "assistant" && message.text === "ALPHA\n",
+          ),
+      );
+      assert.equal(afterFirstTurn.session?.threadId, "thread-1");
+
+      yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
+        events: [
+          {
+            type: "turn.started",
+            ...runtimeBase("evt-two-message-4", "2026-02-24T10:00:11.000Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+          },
+          {
+            type: "message.delta",
+            ...runtimeBase("evt-two-message-5", "2026-02-24T10:00:11.100Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            delta: "BETA\n",
+          },
+          {
+            type: "turn.completed",
+            ...runtimeBase("evt-two-message-6", "2026-02-24T10:00:11.200Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            status: "completed",
+          },
+        ],
+      });
+
+      yield* startTurn({
+        harness,
+        commandId: "cmd-turn-start-two-message-2",
+        messageId: "msg-user-two-message-2",
+        text: "Reply with exactly BETA.",
+      });
+
+      yield* harness.waitForReceipt(
+        (receipt): receipt is TurnProcessingQuiescedReceipt =>
+          receipt.type === "turn.processing.quiesced" &&
+          receipt.threadId === THREAD_ID &&
+          receipt.checkpointTurnCount === 2,
+      );
+
+      const afterSecondTurn = yield* harness.waitForThread(
+        THREAD_ID,
+        (entry) =>
+          entry.session?.status === "ready" &&
+          entry.latestTurn?.turnId === "turn-2" &&
+          entry.latestTurn.completedAt !== null &&
+          entry.messages.some(
+            (message) =>
+              message.id === asMessageId("msg-user-two-message-1") &&
+              message.role === "user" &&
+              message.text === "Reply with exactly ALPHA.",
+          ) &&
+          entry.messages.some(
+            (message) =>
+              message.id === asMessageId("msg-user-two-message-2") &&
+              message.role === "user" &&
+              message.text === "Reply with exactly BETA.",
+          ) &&
+          entry.messages.some(
+            (message) => message.role === "assistant" && message.text === "ALPHA\n",
+          ) &&
+          entry.messages.some(
+            (message) => message.role === "assistant" && message.text === "BETA\n",
+          ) &&
+          !entry.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+      );
+
+      assert.equal(afterSecondTurn.session?.providerName, "codex");
+      assert.equal(afterSecondTurn.session?.threadId, "thread-1");
+      assert.equal(afterSecondTurn.checkpoints.length, 2);
+      assert.equal(harness.adapterHarness!.getStartCount(), 1);
+
+      const providerThread = yield* harness.adapterHarness!.adapter.readThread(THREAD_ID);
+      assert.deepEqual(
+        providerThread.turns.map((turn) => turn.id),
+        ["turn-1", "turn-2"],
+      );
+    }),
+  ),
+);
+
 it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
   "keeps the same Codex provider thread across runtime mode switches",
   () =>
@@ -276,7 +458,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           workspaceRoot: harness.workspaceDir,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: REAL_CODEX_MODEL,
           },
           createdAt,
         });
@@ -289,7 +471,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           title: "Integration Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: REAL_CODEX_MODEL,
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
@@ -313,8 +495,9 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           createdAt: nowIso(),
         });
 
-        const firstThread = yield* harness.waitForThread(
-          THREAD_ID,
+        const firstThread = yield* waitForRealCodexThread(
+          harness,
+          "first turn",
           (entry) =>
             entry.session?.status === "ready" &&
             entry.session.providerName === "codex" &&
@@ -340,20 +523,138 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           createdAt: nowIso(),
         });
 
-        const secondThread = yield* harness.waitForThread(
-          THREAD_ID,
+        const secondThread = yield* waitForRealCodexThread(
+          harness,
+          "second turn",
           (entry) =>
             entry.session?.status === "ready" &&
             entry.session.providerName === "codex" &&
             entry.session.runtimeMode === "approval-required" &&
+            entry.latestTurn?.completedAt !== null &&
             entry.messages.some(
-              (message) => message.role === "assistant" && message.text.includes("BETA"),
-            ),
+              (message) =>
+                message.id === asMessageId("msg-real-codex-2") && message.role === "user",
+            ) &&
+            entry.messages.filter(
+              (message) => message.role === "assistant" && message.streaming === false,
+            ).length >= 2 &&
+            entry.checkpoints.length >= 2 &&
+            !entry.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
           180_000,
         );
         assert.equal(secondThread.session?.threadId, "thread-1");
       }),
     ),
+  300_000,
+);
+
+it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
+  "sends two sequential real Codex turns in the same runtime mode",
+  () =>
+    withRealCodexHarness((harness) =>
+      Effect.gen(function* () {
+        const createdAt = nowIso();
+
+        yield* harness.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-create-real-codex-same-session"),
+          projectId: PROJECT_ID,
+          title: "Integration Project",
+          workspaceRoot: harness.workspaceDir,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: REAL_CODEX_MODEL,
+          },
+          createdAt,
+        });
+
+        yield* harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-create-real-codex-same-session"),
+          threadId: THREAD_ID,
+          projectId: PROJECT_ID,
+          title: "Integration Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: REAL_CODEX_MODEL,
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: harness.workspaceDir,
+          createdAt,
+        });
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-real-codex-same-session-1"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: asMessageId("msg-real-codex-same-session-1"),
+            role: "user",
+            text: "Reply with exactly ONE.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: nowIso(),
+        });
+
+        const firstThread = yield* waitForRealCodexThread(
+          harness,
+          "same-session first turn",
+          (entry) =>
+            entry.session?.status === "ready" &&
+            entry.session.providerName === "codex" &&
+            entry.session.runtimeMode === "full-access" &&
+            entry.latestTurn?.completedAt !== null &&
+            entry.messages.some(
+              (message) => message.role === "assistant" && message.streaming === false,
+            ) &&
+            entry.checkpoints.length >= 1,
+          180_000,
+        );
+        assert.equal(firstThread.session?.threadId, "thread-1");
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-real-codex-same-session-2"),
+          threadId: THREAD_ID,
+          message: {
+            messageId: asMessageId("msg-real-codex-same-session-2"),
+            role: "user",
+            text: "Reply with exactly TWO.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: nowIso(),
+        });
+
+        const secondThread = yield* waitForRealCodexThread(
+          harness,
+          "same-session second turn",
+          (entry) =>
+            entry.session?.status === "ready" &&
+            entry.session.providerName === "codex" &&
+            entry.session.runtimeMode === "full-access" &&
+            entry.latestTurn?.completedAt !== null &&
+            entry.messages.some(
+              (message) =>
+                message.id === asMessageId("msg-real-codex-same-session-2") &&
+                message.role === "user",
+            ) &&
+            entry.messages.filter(
+              (message) => message.role === "assistant" && message.streaming === false,
+            ).length >= 2 &&
+            entry.checkpoints.length >= 2 &&
+            !entry.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+          180_000,
+        );
+        assert.equal(secondThread.session?.threadId, "thread-1");
+      }),
+    ),
+  300_000,
 );
 
 it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
@@ -1037,10 +1338,21 @@ it.live("recovers claudeAgent sessions after provider stopAll using persisted re
           },
         });
 
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 1,
+        );
+
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.latestTurn?.turnId === "turn-1" && entry.session?.threadId === "thread-1",
+            entry.latestTurn?.turnId === "turn-1" &&
+            entry.latestTurn.completedAt !== null &&
+            entry.session?.threadId === "thread-1" &&
+            entry.session.status === "ready" &&
+            entry.session.activeTurnId === null,
         );
 
         yield* harness.adapterHarness!.adapter.stopAll();
@@ -1340,10 +1652,21 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           },
         });
 
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 1,
+        );
+
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.latestTurn?.turnId === "turn-1" && entry.session?.threadId === "thread-1",
+            entry.latestTurn?.turnId === "turn-1" &&
+            entry.latestTurn.completedAt !== null &&
+            entry.session?.threadId === "thread-1" &&
+            entry.session.status === "ready" &&
+            entry.session.activeTurnId === null,
         );
 
         yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
@@ -1394,12 +1717,22 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           text: "Second Claude edit",
         });
 
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 2,
+        );
+
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
             entry.latestTurn?.turnId === "turn-2" &&
+            entry.latestTurn.completedAt !== null &&
             entry.checkpoints.length === 2 &&
-            entry.session?.providerName === "claudeAgent",
+            entry.session?.providerName === "claudeAgent" &&
+            entry.session.status === "ready" &&
+            entry.session.activeTurnId === null,
         );
 
         yield* harness.engine.dispatch({

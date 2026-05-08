@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>T3 Code</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0b0f1a;
+        color: #f8fafc;
+        font:
+          13px system-ui,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        display: grid;
+        gap: 10px;
+        justify-items: center;
+      }
+
+      span {
+        width: 18px;
+        height: 18px;
+        border: 2px solid #5865f2;
+        border-top-color: transparent;
+        border-radius: 999px;
+        animation: spin 0.7s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span aria-hidden="true"></span>
+      <div>Starting T3 Code</div>
+    </main>
+  </body>
+</html>

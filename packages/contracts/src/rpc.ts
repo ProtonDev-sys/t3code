@@ -5,6 +5,40 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { OpenError, OpenInEditorInput } from "./editor.ts";
 import { AuthAccessStreamEvent } from "./auth.ts";
 import {
+  CodexMcpAddServerInput,
+  CodexMcpConfigError,
+  CodexMcpDeleteServerInput,
+  CodexMcpListInput,
+  CodexMcpListResult,
+  CodexMcpUpdateServerInput,
+} from "./codexMcp.ts";
+import { CodexAgentConfigError, CodexAgentListInput, CodexAgentListResult } from "./codexAgents.ts";
+import {
+  CodexAutomationListInput,
+  CodexAutomationListResult,
+  CodexAutomationDeleteInput,
+  CodexAutomationDeleteResult,
+  CodexAutomationSaveInput,
+  CodexAutomationSaveResult,
+  CodexAutomationUpdateInput,
+  CodexAutomationUpdateResult,
+  CodexExtensionsConfigError,
+  CodexPluginInstallInput,
+  CodexPluginInstallResult,
+  CodexPluginListInput,
+  CodexPluginListResult,
+  CodexPluginUpdateInput,
+  CodexPluginUpdateResult,
+  CodexUsageHistoryListInput,
+  CodexUsageHistoryListResult,
+} from "./codexExtensions.ts";
+import {
+  CliUpdateError,
+  CliUpdateStartInput,
+  CliUpdateStartResult,
+  CliUpdateStreamEvent,
+} from "./cliUpdate.ts";
+import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
@@ -133,6 +167,20 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
+  serverCodexMcpList: "server.codexMcp.list",
+  serverCodexMcpAdd: "server.codexMcp.add",
+  serverCodexMcpUpdate: "server.codexMcp.update",
+  serverCodexMcpDelete: "server.codexMcp.delete",
+  serverCodexAgentsList: "server.codexAgents.list",
+  serverCodexPluginsList: "server.codexPlugins.list",
+  serverCodexPluginsInstall: "server.codexPlugins.install",
+  serverCodexPluginsUpdate: "server.codexPlugins.update",
+  serverCodexAutomationsList: "server.codexAutomations.list",
+  serverCodexAutomationsSave: "server.codexAutomations.save",
+  serverCodexAutomationsDelete: "server.codexAutomations.delete",
+  serverCodexAutomationsUpdate: "server.codexAutomations.update",
+  serverCodexUsageHistoryList: "server.codexUsageHistory.list",
+  serverCliUpdatesStartCodex: "server.cliUpdates.startCodex",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -145,6 +193,7 @@ export const WS_METHODS = {
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
+  subscribeCliUpdates: "subscribeCliUpdates",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -187,6 +236,90 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
+});
+
+export const WsServerCodexMcpListRpc = Rpc.make(WS_METHODS.serverCodexMcpList, {
+  payload: CodexMcpListInput,
+  success: CodexMcpListResult,
+  error: CodexMcpConfigError,
+});
+
+export const WsServerCodexMcpAddRpc = Rpc.make(WS_METHODS.serverCodexMcpAdd, {
+  payload: CodexMcpAddServerInput,
+  success: CodexMcpListResult,
+  error: CodexMcpConfigError,
+});
+
+export const WsServerCodexMcpUpdateRpc = Rpc.make(WS_METHODS.serverCodexMcpUpdate, {
+  payload: CodexMcpUpdateServerInput,
+  success: CodexMcpListResult,
+  error: CodexMcpConfigError,
+});
+
+export const WsServerCodexMcpDeleteRpc = Rpc.make(WS_METHODS.serverCodexMcpDelete, {
+  payload: CodexMcpDeleteServerInput,
+  success: CodexMcpListResult,
+  error: CodexMcpConfigError,
+});
+
+export const WsServerCodexAgentsListRpc = Rpc.make(WS_METHODS.serverCodexAgentsList, {
+  payload: CodexAgentListInput,
+  success: CodexAgentListResult,
+  error: CodexAgentConfigError,
+});
+
+export const WsServerCodexPluginsListRpc = Rpc.make(WS_METHODS.serverCodexPluginsList, {
+  payload: CodexPluginListInput,
+  success: CodexPluginListResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexPluginsUpdateRpc = Rpc.make(WS_METHODS.serverCodexPluginsUpdate, {
+  payload: CodexPluginUpdateInput,
+  success: CodexPluginUpdateResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexPluginsInstallRpc = Rpc.make(WS_METHODS.serverCodexPluginsInstall, {
+  payload: CodexPluginInstallInput,
+  success: CodexPluginInstallResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexAutomationsListRpc = Rpc.make(WS_METHODS.serverCodexAutomationsList, {
+  payload: CodexAutomationListInput,
+  success: CodexAutomationListResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexAutomationsUpdateRpc = Rpc.make(WS_METHODS.serverCodexAutomationsUpdate, {
+  payload: CodexAutomationUpdateInput,
+  success: CodexAutomationUpdateResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexAutomationsSaveRpc = Rpc.make(WS_METHODS.serverCodexAutomationsSave, {
+  payload: CodexAutomationSaveInput,
+  success: CodexAutomationSaveResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexAutomationsDeleteRpc = Rpc.make(WS_METHODS.serverCodexAutomationsDelete, {
+  payload: CodexAutomationDeleteInput,
+  success: CodexAutomationDeleteResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCodexUsageHistoryListRpc = Rpc.make(WS_METHODS.serverCodexUsageHistoryList, {
+  payload: CodexUsageHistoryListInput,
+  success: CodexUsageHistoryListResult,
+  error: CodexExtensionsConfigError,
+});
+
+export const WsServerCliUpdatesStartCodexRpc = Rpc.make(WS_METHODS.serverCliUpdatesStartCodex, {
+  payload: CliUpdateStartInput,
+  success: CliUpdateStartResult,
+  error: CliUpdateError,
 });
 
 export const WsSourceControlLookupRepositoryRpc = Rpc.make(
@@ -412,6 +545,12 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
   stream: true,
 });
 
+export const WsSubscribeCliUpdatesRpc = Rpc.make(WS_METHODS.subscribeCliUpdates, {
+  payload: Schema.Struct({}),
+  success: CliUpdateStreamEvent,
+  stream: true,
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -419,6 +558,20 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
   WsServerDiscoverSourceControlRpc,
+  WsServerCodexMcpListRpc,
+  WsServerCodexMcpAddRpc,
+  WsServerCodexMcpUpdateRpc,
+  WsServerCodexMcpDeleteRpc,
+  WsServerCodexAgentsListRpc,
+  WsServerCodexPluginsListRpc,
+  WsServerCodexPluginsInstallRpc,
+  WsServerCodexPluginsUpdateRpc,
+  WsServerCodexAutomationsListRpc,
+  WsServerCodexAutomationsSaveRpc,
+  WsServerCodexAutomationsDeleteRpc,
+  WsServerCodexAutomationsUpdateRpc,
+  WsServerCodexUsageHistoryListRpc,
+  WsServerCliUpdatesStartCodexRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
@@ -448,6 +601,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
+  WsSubscribeCliUpdatesRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,

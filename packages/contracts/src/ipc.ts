@@ -59,6 +59,33 @@ import type {
   AuthWebSocketTokenResult,
 } from "./auth.ts";
 import type { AdvertisedEndpoint } from "./remoteAccess.ts";
+import type {
+  CodexMcpAddServerInput,
+  CodexMcpDeleteServerInput,
+  CodexMcpListInput,
+  CodexMcpListResult,
+  CodexMcpUpdateServerInput,
+} from "./codexMcp.ts";
+import type { CodexAgentListInput, CodexAgentListResult } from "./codexAgents.ts";
+import type {
+  CodexAutomationListInput,
+  CodexAutomationListResult,
+  CodexAutomationDeleteInput,
+  CodexAutomationDeleteResult,
+  CodexAutomationSaveInput,
+  CodexAutomationSaveResult,
+  CodexAutomationUpdateInput,
+  CodexAutomationUpdateResult,
+  CodexPluginInstallInput,
+  CodexPluginInstallResult,
+  CodexPluginListInput,
+  CodexPluginListResult,
+  CodexPluginUpdateInput,
+  CodexPluginUpdateResult,
+  CodexUsageHistoryListInput,
+  CodexUsageHistoryListResult,
+} from "./codexExtensions.ts";
+import type { CliUpdateStartInput, CliUpdateStartResult } from "./cliUpdate.ts";
 import { EditorId } from "./editor.ts";
 import type { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import type { ClientSettings, ServerSettings, ServerSettingsPatch } from "./settings.ts";
@@ -88,10 +115,11 @@ export type DesktopUpdateStatus =
   | "available"
   | "downloading"
   | "downloaded"
+  | "installing"
   | "error";
 
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
-export type DesktopTheme = "light" | "dark" | "system";
+export type DesktopTheme = "light" | "dark" | "system" | "blurple-twilight";
 export type DesktopUpdateChannel = "latest" | "nightly";
 export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
 
@@ -300,6 +328,32 @@ export interface LocalApi {
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
     discoverSourceControl: () => Promise<SourceControlDiscoveryResult>;
+    codexMcp: {
+      list: (input?: CodexMcpListInput) => Promise<CodexMcpListResult>;
+      add: (input: CodexMcpAddServerInput) => Promise<CodexMcpListResult>;
+      update: (input: CodexMcpUpdateServerInput) => Promise<CodexMcpListResult>;
+      delete: (input: CodexMcpDeleteServerInput) => Promise<CodexMcpListResult>;
+    };
+    codexAgents: {
+      list: (input?: CodexAgentListInput) => Promise<CodexAgentListResult>;
+    };
+    codexPlugins: {
+      list: (input?: CodexPluginListInput) => Promise<CodexPluginListResult>;
+      install: (input: CodexPluginInstallInput) => Promise<CodexPluginInstallResult>;
+      update: (input: CodexPluginUpdateInput) => Promise<CodexPluginUpdateResult>;
+    };
+    codexAutomations: {
+      list: (input?: CodexAutomationListInput) => Promise<CodexAutomationListResult>;
+      save: (input: CodexAutomationSaveInput) => Promise<CodexAutomationSaveResult>;
+      delete: (input: CodexAutomationDeleteInput) => Promise<CodexAutomationDeleteResult>;
+      update: (input: CodexAutomationUpdateInput) => Promise<CodexAutomationUpdateResult>;
+    };
+    codexUsageHistory: {
+      list: (input?: CodexUsageHistoryListInput) => Promise<CodexUsageHistoryListResult>;
+    };
+    cliUpdates: {
+      startCodex: (input: CliUpdateStartInput) => Promise<CliUpdateStartResult>;
+    };
   };
 }
 

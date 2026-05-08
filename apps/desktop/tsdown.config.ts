@@ -1,21 +1,23 @@
 import { defineConfig } from "tsdown";
 
-const shared = {
-  format: "cjs" as const,
-  outDir: "dist-electron",
+export default defineConfig({
+  entry: {
+    "ssh-helper": "src/sshHelper.ts",
+  },
+  format: ["esm"],
+  checks: {
+    legacyCjs: false,
+  },
+  outDir: "dist",
   sourcemap: true,
-  outExtensions: () => ({ js: ".cjs" }),
-};
-
-export default defineConfig([
-  {
-    ...shared,
-    entry: ["src/main.ts"],
-    clean: true,
-    noExternal: (id) => id.startsWith("@t3tools/") || id.startsWith("effect-acp"),
+  clean: true,
+  noExternal: (id) =>
+    id.startsWith("@effect/") ||
+    id === "effect" ||
+    id.startsWith("@t3tools/") ||
+    id.startsWith("effect-acp"),
+  inlineOnly: false,
+  banner: {
+    js: "#!/usr/bin/env node\n",
   },
-  {
-    ...shared,
-    entry: ["src/preload.ts"],
-  },
-]);
+});

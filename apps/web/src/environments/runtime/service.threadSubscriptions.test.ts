@@ -438,6 +438,45 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("prewarms thread detail subscriptions after the configured delay and staggers work", async () => {
+    const {
+      prewarmThreadDetailSubscriptions,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const cleanup = prewarmThreadDetailSubscriptions(
+      [
+        { environmentId, threadId: ThreadId.make("thread-prewarm-1") },
+        { environmentId, threadId: ThreadId.make("thread-prewarm-2") },
+      ],
+      {
+        initialDelayMs: 100,
+        intervalMs: 50,
+        retainMs: 200,
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(99);
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(49);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+
+    cleanup();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("disposes cached thread detail subscriptions when the environment service resets", async () => {
     const {
       retainThreadDetailSubscription,

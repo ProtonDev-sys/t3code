@@ -19,7 +19,11 @@
  *
  * @module ProviderAdapterRegistry
  */
-import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ProviderCustomAgent,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Effect, PubSub, Scope, Stream } from "effect";
 
@@ -33,6 +37,8 @@ export interface ProviderInstanceRoutingInfo {
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
+  readonly mcpEnabled: boolean;
+  readonly customAgents: ReadonlyArray<ProviderCustomAgent>;
   readonly continuationIdentity: ProviderContinuationIdentity;
 }
 

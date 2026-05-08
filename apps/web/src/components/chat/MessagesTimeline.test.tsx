@@ -160,6 +160,46 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work log");
   });
 
+  it("renders subagent tool calls in their own work menu", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Loaded project",
+              tone: "info",
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-2",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "spawned explorer",
+              detail: "Trace provider runtime state",
+              tone: "tool",
+              itemType: "collab_agent_tool_call",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Work log (1)");
+    expect(markup).toContain("Subagents (1)");
+    expect(markup).toContain("Spawned explorer");
+    expect(markup).not.toContain("Work log (2)");
+  });
+
   it("formats changed file paths from the workspace root", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

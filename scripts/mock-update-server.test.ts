@@ -1,10 +1,23 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NodeHttpServer } from "@effect/platform-node";
 import { assert, it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, type PlatformError } from "effect";
 import { HttpClient, HttpRouter } from "effect/unstable/http";
 
 import { makeMockUpdateRouteLayer } from "./mock-update-server.ts";
+
+const deniedSymlinkErrorCodes = new Set(["EACCES", "EPERM", "ENOTSUP"]);
+
+const getNodeErrorCode = (cause: unknown): unknown =>
+  typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+
+const isDeniedSymlinkError = (error: PlatformError.PlatformError): boolean => {
+  const code = getNodeErrorCode(error.reason.cause);
+  return (
+    deniedSymlinkErrorCodes.has(String(code)) &&
+    (error.reason._tag === "PermissionDenied" || error.reason._tag === "Unknown")
+  );
+};
 
 const withMockUpdateServer = <A, E, R>(rootRealPath: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -87,7 +100,12 @@ it.layer(NodeServices.layer)("mock-update-server", (it) => {
 
       yield* fileSystem.writeFileString(outsideFile, "version: outside\n");
       yield* fileSystem.makeDirectory(linksDir, { recursive: true });
-      yield* fileSystem.symlink(outsideFile, symlinkPath);
+      const symlinkResult = yield* fileSystem.symlink(outsideFile, symlinkPath).pipe(Effect.result);
+
+      if (symlinkResult._tag === "Failure") {
+        if (isDeniedSymlinkError(symlinkResult.failure)) return;
+        return yield* symlinkResult.failure;
+      }
 
       yield* withMockUpdateServer(
         rootRealPath,

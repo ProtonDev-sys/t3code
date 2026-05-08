@@ -110,6 +110,8 @@ const makeFakeInstance = (
     },
     displayName: undefined,
     enabled: true,
+    mcpEnabled: true,
+    customAgents: [],
     snapshot: {
       getSnapshot: Effect.succeed({} as unknown as ServerProvider),
       refresh: Effect.succeed({} as unknown as ServerProvider),
@@ -159,6 +161,8 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
         displayName: undefined,
         accentColor: undefined,
         enabled: true,
+        mcpEnabled: true,
+        customAgents: [],
         continuationIdentity: {
           driverKind: CLAUDE_AGENT_DRIVER,
           continuationKey: "claudeAgent:instance:claudeAgent",

@@ -3,10 +3,12 @@ import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Option } from "effect";
 
 import {
+  createTauriConfigOverride,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
+  resolveDesktopWebAssetBrand,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
 } from "./build-desktop-artifact.ts";
@@ -35,6 +37,42 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
     });
+  });
+
+  it("switches staged desktop web icons to the matching production or nightly brand", () => {
+    assert.equal(resolveDesktopWebAssetBrand("0.0.17"), "production");
+    assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
+  });
+
+  it("keeps the Tauri updater plugin config non-null when updates are not configured", () => {
+    assert.deepStrictEqual(
+      createTauriConfigOverride("0.0.17", "T3 Code (Alpha)", {
+        createUpdaterArtifacts: false,
+        mockUpdates: false,
+        updaterEndpoints: [],
+        updaterPubkey: undefined,
+      }).plugins.updater,
+      {
+        endpoints: [],
+        pubkey: "",
+      },
+    );
+  });
+
+  it("overrides the disabled Tauri updater config when update signing is configured", () => {
+    assert.deepStrictEqual(
+      createTauriConfigOverride("0.0.17", "T3 Code (Alpha)", {
+        createUpdaterArtifacts: true,
+        mockUpdates: true,
+        updaterEndpoints: ["https://updates.example/latest.json"],
+        updaterPubkey: "trusted-public-key",
+      }).plugins.updater,
+      {
+        dangerousInsecureTransportProtocol: true,
+        endpoints: ["https://updates.example/latest.json"],
+        pubkey: "trusted-public-key",
+      },
+    );
   });
 
   it("falls back to the default mock update port when the configured port is blank", () => {

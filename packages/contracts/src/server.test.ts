@@ -43,4 +43,41 @@ describe("ServerProvider", () => {
 
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
+
+  it("decodes optional provider usage payloads", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      usage: {
+        checkedAt: "2026-04-10T00:00:00.000Z",
+        rateLimits: {
+          rateLimits: {
+            limitId: "codex",
+            primary: {
+              usedPercent: 13,
+            },
+          },
+        },
+      },
+      models: [],
+    });
+
+    expect(parsed.usage?.checkedAt).toBe("2026-04-10T00:00:00.000Z");
+    expect(parsed.usage?.rateLimits).toEqual({
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 13,
+        },
+      },
+    });
+  });
 });

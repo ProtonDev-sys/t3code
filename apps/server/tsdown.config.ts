@@ -9,7 +9,13 @@ export default defineConfig({
   outDir: "dist",
   sourcemap: true,
   clean: true,
-  noExternal: (id) => id.startsWith("@t3tools/") || id.startsWith("effect-acp"),
+  noExternal: (id) => {
+    if (id.startsWith("node:")) return false;
+    if (id === "node-pty") return false;
+    if (id.startsWith("@effect/platform-bun")) return false;
+    if (id.startsWith("@effect/sql-sqlite-bun")) return false;
+    return true;
+  },
   inlineOnly: false,
   banner: {
     js: "#!/usr/bin/env node\n",

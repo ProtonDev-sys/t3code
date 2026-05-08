@@ -1,4 +1,9 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type FilesystemBrowseEntry,
+  type KeybindingCommand,
+  type ThreadId,
+} from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
@@ -6,8 +11,16 @@ import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;
+export const COMMAND_PALETTE_SEARCH_RESULT_LIMIT = 60;
+export const COMMAND_PALETTE_THREAD_PREWARM_LIMIT = 6;
 export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
 export const ADDON_ICON_CLASS = "size-4";
+export type CommandPaletteAdornment = ReactNode | (() => ReactNode);
+
+export interface CommandPaletteThreadPrewarmRef {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+}
 
 export interface CommandPaletteItem {
   readonly kind: "action" | "submenu";
@@ -19,15 +32,16 @@ export interface CommandPaletteItem {
   readonly icon: ReactNode;
   readonly disabled?: boolean;
   /** Optional content rendered inline before the title text. */
-  readonly titleLeadingContent?: ReactNode;
+  readonly titleLeadingContent?: CommandPaletteAdornment;
   /** Optional content rendered inline after the title text (before the timestamp). */
-  readonly titleTrailingContent?: ReactNode;
+  readonly titleTrailingContent?: CommandPaletteAdornment;
   readonly shortcutCommand?: KeybindingCommand;
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
+  readonly prewarmThreadRef?: CommandPaletteThreadPrewarmRef;
   readonly run: () => Promise<void>;
 }
 
@@ -149,9 +163,6 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       descriptionParts.push("Current thread");
     }
 
-    const leadingContent = input.renderLeadingContent?.(thread);
-    const trailingContent = input.renderTrailingContent?.(thread);
-
     return Object.assign(
       {
         kind: "action" as const,
@@ -163,9 +174,17 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
           thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         ),
         icon: input.icon,
+        prewarmThreadRef: {
+          environmentId: thread.environmentId,
+          threadId: thread.id,
+        },
       },
-      leadingContent ? { titleLeadingContent: leadingContent } : {},
-      trailingContent ? { titleTrailingContent: trailingContent } : {},
+      input.renderLeadingContent
+        ? { titleLeadingContent: () => input.renderLeadingContent?.(thread) }
+        : {},
+      input.renderTrailingContent
+        ? { titleTrailingContent: () => input.renderTrailingContent?.(thread) }
+        : {},
       {
         run: async () => {
           await input.runThread(thread);
@@ -175,18 +194,121 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   });
 }
 
-function rankSearchFieldMatch(field: string, normalizedQuery: string): number {
-  const normalizedField = normalizeSearchText(field);
-  if (normalizedField.length === 0 || !normalizedField.includes(normalizedQuery)) {
+interface SearchFieldIndex {
+  readonly normalizedField: string;
+  readonly wordField: string;
+  readonly compactField: string;
+  readonly initials: string;
+}
+
+interface SearchQueryIndex {
+  readonly normalizedQuery: string;
+  readonly wordQuery: string;
+  readonly compactQuery: string;
+}
+
+const MAX_SEARCH_FIELD_INDEX_CACHE_ENTRIES = 5_000;
+const searchFieldIndexCache = new Map<string, SearchFieldIndex>();
+
+function getSearchFieldIndex(field: string): SearchFieldIndex {
+  const cached = searchFieldIndexCache.get(field);
+  if (cached) {
+    return cached;
+  }
+
+  const index = {
+    normalizedField: normalizeSearchText(field),
+    wordField: normalizeSearchWords(field),
+    compactField: compactSearchText(field),
+    initials: getSearchInitials(field),
+  };
+
+  if (searchFieldIndexCache.size >= MAX_SEARCH_FIELD_INDEX_CACHE_ENTRIES) {
+    const oldestKey = searchFieldIndexCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      searchFieldIndexCache.delete(oldestKey);
+    }
+  }
+  searchFieldIndexCache.set(field, index);
+  return index;
+}
+
+function getSearchQueryIndex(normalizedQuery: string): SearchQueryIndex {
+  return {
+    normalizedQuery,
+    wordQuery: normalizeSearchWords(normalizedQuery),
+    compactQuery: compactSearchText(normalizedQuery),
+  };
+}
+
+function rankSearchFieldMatch(field: string, query: SearchQueryIndex): number {
+  const { compactField, initials, normalizedField, wordField } = getSearchFieldIndex(field);
+  const { compactQuery, normalizedQuery, wordQuery } = query;
+
+  if (
+    normalizedField.length === 0 ||
+    normalizedQuery.length === 0 ||
+    wordQuery.length === 0 ||
+    compactQuery.length === 0
+  ) {
     return Number.NEGATIVE_INFINITY;
   }
-  if (normalizedField === normalizedQuery) {
-    return 3;
+  if (normalizedField === normalizedQuery || wordField === wordQuery) {
+    return 60;
   }
-  if (normalizedField.startsWith(normalizedQuery)) {
-    return 2;
+  if (normalizedField.startsWith(normalizedQuery) || wordField.startsWith(wordQuery)) {
+    return 50;
   }
-  return 1;
+  if (wordField.split(" ").some((word) => word.startsWith(wordQuery))) {
+    return 42;
+  }
+  if (normalizedField.includes(normalizedQuery) || wordField.includes(wordQuery)) {
+    return 36;
+  }
+
+  if (initials.startsWith(compactQuery)) {
+    return 30;
+  }
+  if (isOrderedSubsequence(compactQuery, compactField)) {
+    return 12;
+  }
+
+  return Number.NEGATIVE_INFINITY;
+}
+
+function normalizeSearchWords(value: string): string {
+  return normalizeSearchText(value.replace(/[^\p{L}\p{N}]+/gu, " "));
+}
+
+function compactSearchText(value: string): string {
+  return normalizeSearchWords(value).replace(/\s+/g, "");
+}
+
+function getSearchInitials(value: string): string {
+  return normalizeSearchWords(value)
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word[0] ?? "")
+    .join("");
+}
+
+function isOrderedSubsequence(needle: string, haystack: string): boolean {
+  if (needle.length === 0) {
+    return true;
+  }
+
+  let needleIndex = 0;
+  for (const char of haystack) {
+    if (char !== needle[needleIndex]) {
+      continue;
+    }
+    needleIndex += 1;
+    if (needleIndex === needle.length) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function rankCommandPaletteItemMatch(
@@ -195,17 +317,68 @@ function rankCommandPaletteItemMatch(
 ): number {
   const terms = item.searchTerms.filter((term) => term.length > 0);
   if (terms.length === 0) {
-    return 0;
+    return Number.NEGATIVE_INFINITY;
   }
 
-  for (const [index, field] of terms.entries()) {
-    const fieldRank = rankSearchFieldMatch(field, normalizedQuery);
-    if (fieldRank !== Number.NEGATIVE_INFINITY) {
-      return 1_000 - index * 100 + fieldRank;
+  const normalizedQueryIndex = getSearchQueryIndex(normalizedQuery);
+  const queryWords = normalizedQueryIndex.wordQuery.split(" ").filter(Boolean);
+  const queries =
+    queryWords.length > 1
+      ? [normalizedQueryIndex, ...queryWords.map((query) => getSearchQueryIndex(query))]
+      : [normalizedQueryIndex];
+  let score = 0;
+
+  for (const query of queries) {
+    let bestQueryScore = Number.NEGATIVE_INFINITY;
+    for (const [index, field] of terms.entries()) {
+      const fieldRank = rankSearchFieldMatch(field, query);
+      if (fieldRank === Number.NEGATIVE_INFINITY) {
+        continue;
+      }
+      bestQueryScore = Math.max(bestQueryScore, 1_000 - index * 100 + fieldRank);
+    }
+
+    if (bestQueryScore === Number.NEGATIVE_INFINITY) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    score += bestQueryScore;
+  }
+
+  return Math.round(score / queries.length);
+}
+
+export function getCommandPaletteThreadPrewarmRefs(input: {
+  groups: ReadonlyArray<CommandPaletteGroup>;
+  limit?: number;
+}): CommandPaletteThreadPrewarmRef[] {
+  const limit = input.limit ?? COMMAND_PALETTE_THREAD_PREWARM_LIMIT;
+  if (limit <= 0) {
+    return [];
+  }
+
+  const refs: CommandPaletteThreadPrewarmRef[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const group of input.groups) {
+    for (const item of group.items) {
+      if (item.kind !== "action" || !item.prewarmThreadRef) {
+        continue;
+      }
+
+      const key = `${item.prewarmThreadRef.environmentId}:${item.prewarmThreadRef.threadId}`;
+      if (seenKeys.has(key)) {
+        continue;
+      }
+
+      refs.push(item.prewarmThreadRef);
+      seenKeys.add(key);
+      if (refs.length >= limit) {
+        return refs;
+      }
     }
   }
 
-  return 0;
+  return refs;
 }
 
 export function filterCommandPaletteGroups(input: {
@@ -254,15 +427,15 @@ export function filterCommandPaletteGroups(input: {
   return searchableGroups.flatMap((group) => {
     const items = group.items
       .map((item, index) => {
-        const haystack = normalizeSearchText(item.searchTerms.join(" "));
-        if (!haystack.includes(normalizedQuery)) {
+        const rank = rankCommandPaletteItemMatch(item, normalizedQuery);
+        if (rank === Number.NEGATIVE_INFINITY) {
           return null;
         }
 
         return {
           item,
           index,
-          rank: rankCommandPaletteItemMatch(item, normalizedQuery),
+          rank,
         };
       })
       .filter(
@@ -270,6 +443,7 @@ export function filterCommandPaletteGroups(input: {
           entry !== null,
       )
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+      .slice(0, COMMAND_PALETTE_SEARCH_RESULT_LIMIT)
       .map((entry) => entry.item);
 
     if (items.length === 0) {

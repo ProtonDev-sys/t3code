@@ -125,6 +125,39 @@ export function useThreadActions() {
         survivingThreads,
         threadRef.threadId,
       );
+      const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
+      const currentRouteThreadRef = getCurrentRouteThreadRef();
+      const shouldNavigateToFallback =
+        currentRouteThreadRef?.threadId === threadRef.threadId &&
+        currentRouteThreadRef.environmentId === threadRef.environmentId;
+      const fallbackThreadId = getFallbackThreadIdAfterDelete({
+        threads,
+        deletedThreadId: threadRef.threadId,
+        deletedThreadIds,
+        sortOrder: sidebarThreadSortOrder,
+      });
+      if (shouldNavigateToFallback) {
+        if (fallbackThreadId) {
+          const fallbackThread = selectThreadByRef(
+            state,
+            scopeThreadRef(threadRef.environmentId, fallbackThreadId),
+          );
+          if (fallbackThread) {
+            await router.navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(
+                scopeThreadRef(fallbackThread.environmentId, fallbackThread.id),
+              ),
+              replace: true,
+            });
+          } else {
+            await router.navigate({ to: "/", replace: true });
+          }
+        } else {
+          await router.navigate({ to: "/", replace: true });
+        }
+      }
+
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
@@ -159,17 +192,6 @@ export function useThreadActions() {
         // Terminal may already be closed.
       }
 
-      const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
-      const currentRouteThreadRef = getCurrentRouteThreadRef();
-      const shouldNavigateToFallback =
-        currentRouteThreadRef?.threadId === threadRef.threadId &&
-        currentRouteThreadRef.environmentId === threadRef.environmentId;
-      const fallbackThreadId = getFallbackThreadIdAfterDelete({
-        threads,
-        deletedThreadId: threadRef.threadId,
-        deletedThreadIds,
-        sortOrder: sidebarThreadSortOrder,
-      });
       await api.orchestration.dispatchCommand({
         type: "thread.delete",
         commandId: newCommandId(),
@@ -181,28 +203,6 @@ export function useThreadActions() {
         threadRef,
       );
       clearTerminalState(threadRef);
-
-      if (shouldNavigateToFallback) {
-        if (fallbackThreadId) {
-          const fallbackThread = selectThreadByRef(
-            useStore.getState(),
-            scopeThreadRef(threadRef.environmentId, fallbackThreadId),
-          );
-          if (fallbackThread) {
-            await router.navigate({
-              to: "/$environmentId/$threadId",
-              params: buildThreadRouteParams(
-                scopeThreadRef(fallbackThread.environmentId, fallbackThread.id),
-              ),
-              replace: true,
-            });
-          } else {
-            await router.navigate({ to: "/", replace: true });
-          }
-        } else {
-          await router.navigate({ to: "/", replace: true });
-        }
-      }
 
       if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) {
         return;

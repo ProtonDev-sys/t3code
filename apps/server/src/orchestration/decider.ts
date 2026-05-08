@@ -440,8 +440,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { modelSelection: command.modelSelection }
             : {}),
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
-          runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          runtimeMode: command.runtimeMode,
+          interactionMode: command.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },
@@ -449,7 +449,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [userMessageEvent, turnStartRequestedEvent];
     }
 
-    case "thread.turn.interrupt": {
+    case "thread.turn.steer": {
       yield* requireThread({
         readModel,
         command,
@@ -462,10 +462,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         }),
+        type: "thread.turn-steer-requested",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          message: command.message,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.turn.interrupt": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const activeTurnId =
+        targetThread.session?.status === "running" ? targetThread.session.activeTurnId : null;
+      const turnId = command.turnId ?? activeTurnId ?? undefined;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
         type: "thread.turn-interrupt-requested",
         payload: {
           threadId: command.threadId,
-          ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          ...(turnId !== undefined ? { turnId } : {}),
           createdAt: command.createdAt,
         },
       };

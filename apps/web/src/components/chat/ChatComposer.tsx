@@ -9,6 +9,7 @@ import type {
   RuntimeMode,
   ScopedThreadRef,
   ServerProvider,
+  ServerProviderSlashCommand,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -44,6 +45,7 @@ import {
 import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
 import {
   type ComposerImageAttachment,
+  type ComposerProviderSlashCommandDraft,
   type DraftId,
   type PersistedComposerImageAttachment,
   useComposerDraftStore,
@@ -56,45 +58,28 @@ import {
   insertInlineTerminalContextPlaceholder,
   removeInlineTerminalContextPlaceholder,
 } from "../../lib/terminalContext";
-import {
-  shouldUseCompactComposerPrimaryActions,
-  shouldUseCompactComposerFooter,
-} from "../composerFooterLayout";
+import { shouldUseCompactComposerPrimaryActions } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
-import { ProviderModelPicker } from "./ProviderModelPicker";
+import { ComposerModelDropdown } from "./ComposerModelDropdown";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerRuntimeModeDropdown } from "./ComposerRuntimeModeDropdown";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
-import {
-  getComposerProviderState,
-  renderProviderTraitsMenuContent,
-  renderProviderTraitsPicker,
-} from "./composerProviderState";
+import { getComposerProviderState } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
-import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import {
-  BotIcon,
-  CircleAlertIcon,
-  ListTodoIcon,
-  type LucideIcon,
-  LockIcon,
-  LockOpenIcon,
-  PenLineIcon,
-  XIcon,
-} from "lucide-react";
+import { BotIcon, CircleAlertIcon, ClockIcon, ListTodoIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import { getProviderInteractionModeToggle } from "../../providerModels";
 import {
@@ -108,35 +93,27 @@ import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
-import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
+import type { ContextWindowSnapshot } from "../../lib/contextWindow";
+import {
+  deriveProviderUsageSnapshots,
+  hasProviderTokenUsageTotals,
+  type ProviderTokenUsageTotals,
+} from "../../lib/providerUsage";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import {
+  ComposerFastModeMenuCheckboxItem,
+  ComposerContextWindowDropdown,
+  ComposerReasoningDropdown,
+  ComposerAgentDropdown,
+  getComposerTraitStatusItems,
+  hasComposerFastModeControl,
+  type ComposerTraitStatusItem,
+} from "./TraitsPicker";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
-const runtimeModeConfig: Record<
-  RuntimeMode,
-  { label: string; description: string; icon: LucideIcon }
-> = {
-  "approval-required": {
-    label: "Supervised",
-    description: "Ask before commands and file changes.",
-    icon: LockIcon,
-  },
-  "auto-accept-edits": {
-    label: "Auto-accept edits",
-    description: "Auto-approve edits, ask before other actions.",
-    icon: PenLineIcon,
-  },
-  "full-access": {
-    label: "Full access",
-    description: "Allow commands and edits without prompts.",
-    icon: LockOpenIcon,
-  },
-};
-
-const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
@@ -179,115 +156,77 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
   return element.closest(COMPOSER_FLOATING_LAYER_SELECTOR) !== null;
 }
 
-const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
+export interface SelectedProviderSlashCommand {
+  provider: ProviderDriverKind;
+  command: ServerProviderSlashCommand;
+}
+
+const ComposerFooterStatusStrip = memo(function ComposerFooterStatusStrip(props: {
+  traitItems: ReadonlyArray<ComposerTraitStatusItem>;
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
-  runtimeMode: RuntimeMode;
   showPlanToggle: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
-  onToggleInteractionMode: () => void;
-  onRuntimeModeChange: (mode: RuntimeMode) => void;
   onTogglePlanSidebar: () => void;
 }) {
-  const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
-  const RuntimeModeIcon = runtimeModeOption.icon;
+  const showPlanMode = props.showInteractionModeToggle && props.interactionMode === "plan";
+  const showPlanView = props.showPlanToggle && !showPlanMode;
 
   return (
-    <>
-      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
-
-      {props.showInteractionModeToggle ? (
-        <>
-          <Button
-            variant="ghost"
-            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-            size="sm"
-            type="button"
-            onClick={props.onToggleInteractionMode}
-            title={
-              props.interactionMode === "plan"
-                ? "Plan mode — click to return to normal build mode"
-                : "Default mode — click to enter plan mode"
-            }
-          >
-            <BotIcon />
-            <span className="sr-only sm:not-sr-only">
-              {props.interactionMode === "plan" ? "Plan" : "Build"}
-            </span>
-          </Button>
-
-          <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
-        </>
-      ) : null}
-
-      <Select
-        value={props.runtimeMode}
-        onValueChange={(value) => props.onRuntimeModeChange(value!)}
-      >
-        <SelectTrigger
-          variant="ghost"
-          size="sm"
-          className="font-medium"
-          aria-label="Runtime mode"
-          title={runtimeModeOption.description}
+    <div
+      className="-mx-0.5 flex min-w-0 select-none items-center gap-1 overflow-x-auto px-0.5 text-[11px] leading-none text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      data-chat-composer-status-strip="true"
+    >
+      {props.traitItems.map((item) => (
+        <span
+          key={item.id}
+          title={`${item.title}: ${item.label}`}
+          data-chat-composer-trait-status={item.id}
+          className={cn(
+            "inline-flex h-7 shrink-0 items-center rounded-full px-2 font-medium",
+            item.active
+              ? "bg-muted/50 text-foreground/85"
+              : "bg-transparent text-muted-foreground/78",
+          )}
         >
-          <RuntimeModeIcon className="size-4" />
-          <SelectValue>{runtimeModeOption.label}</SelectValue>
-        </SelectTrigger>
-        <SelectPopup alignItemWithTrigger={false}>
-          {runtimeModeOptions.map((mode) => {
-            const option = runtimeModeConfig[mode];
-            const OptionIcon = option.icon;
-            return (
-              <SelectItem key={mode} value={mode} className="min-w-64 py-2">
-                <div className="grid min-w-0 gap-0.5">
-                  <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                    <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    {option.label}
-                  </span>
-                  <span className="text-muted-foreground text-xs leading-4">
-                    {option.description}
-                  </span>
-                </div>
-              </SelectItem>
-            );
-          })}
-        </SelectPopup>
-      </Select>
-
-      {props.showPlanToggle ? (
-        <>
-          <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
-          <Button
-            variant="ghost"
-            className={cn(
-              "shrink-0 whitespace-nowrap px-2 sm:px-3",
-              props.planSidebarOpen
-                ? "text-blue-400 hover:text-blue-300"
-                : "text-muted-foreground/70 hover:text-foreground/80",
-            )}
-            size="sm"
-            type="button"
-            onClick={props.onTogglePlanSidebar}
-            title={
-              props.planSidebarOpen
-                ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
-                : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`
-            }
-          >
-            <ListTodoIcon />
-            <span className="sr-only sm:not-sr-only">{props.planSidebarLabel}</span>
-          </Button>
-        </>
+          {item.label}
+        </span>
+      ))}
+      {showPlanMode ? (
+        <span
+          title="Plan mode"
+          data-chat-composer-plan-mode-status="true"
+          className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full bg-muted/50 px-2 font-medium text-foreground/85"
+        >
+          <ListTodoIcon className="size-3.5" />
+          Plan
+        </span>
+      ) : showPlanView ? (
+        <button
+          type="button"
+          title={`${props.planSidebarOpen ? "Showing" : "Available"} ${props.planSidebarLabel.toLowerCase()} sidebar`}
+          data-chat-composer-plan-sidebar-status="true"
+          onClick={props.onTogglePlanSidebar}
+          className={cn(
+            "inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full border border-border/70 px-2 font-medium transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40",
+            props.planSidebarOpen
+              ? "bg-muted/55 text-foreground/85"
+              : "bg-background/50 text-muted-foreground/78",
+          )}
+        >
+          <ListTodoIcon className="size-3.5" />
+          {props.planSidebarLabel}
+        </button>
       ) : null}
-    </>
+    </div>
   );
 });
 
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
-  activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
+  activeContextWindow: ContextWindowSnapshot | null;
+  activeTokenUsage: ProviderTokenUsageTotals | null;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -310,7 +249,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
-      {props.activeContextWindow ? <ContextWindowMeter usage={props.activeContextWindow} /> : null}
+      {props.activeContextWindow ? (
+        <ContextWindowMeter usage={props.activeContextWindow} tokenUsage={props.activeTokenUsage} />
+      ) : null}
       {props.isPreparingWorktree ? (
         <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
       ) : null}
@@ -331,6 +272,53 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
     </>
+  );
+});
+
+const ComposerQueuedFollowUpPanel = memo(function ComposerQueuedFollowUpPanel(props: {
+  followUps: ReadonlyArray<{
+    id: string;
+    preview: string;
+    description: string;
+  }>;
+  onSteer: (followUpId: string) => void;
+  onDismiss: (followUpId: string) => void;
+}) {
+  const followUp = props.followUps[0];
+  if (!followUp) {
+    return null;
+  }
+  const remainingCount = props.followUps.length - 1;
+
+  return (
+    <div className="flex min-w-0 items-start gap-2.5 px-3 py-2.5 sm:px-4">
+      <ClockIcon className="mt-0.5 size-4 shrink-0 text-primary/80" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 font-medium text-foreground text-sm">Queued follow-up</span>
+          {remainingCount > 0 ? (
+            <span className="truncate text-muted-foreground/70 text-xs">
+              +{remainingCount} more
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 text-muted-foreground text-xs">{followUp.description}</p>
+        <p className="mt-1 truncate text-foreground/85 text-xs">{followUp.preview}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button size="xs" onClick={() => props.onSteer(followUp.id)}>
+          Steer
+        </Button>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Remove queued follow-up"
+          onClick={() => props.onDismiss(followUp.id)}
+        >
+          <XIcon className="size-3.5" />
+        </Button>
+      </div>
+    </div>
   );
 });
 
@@ -358,11 +346,14 @@ export interface ChatComposerHandle {
   }) => void;
   /** Insert a terminal context from the terminal drawer. */
   addTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Clear or restore the selected provider slash command. */
+  setProviderSlashCommand: (command: SelectedProviderSlashCommand | null) => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
     images: ComposerImageAttachment[];
     terminalContexts: TerminalContextDraft[];
+    selectedProviderSlashCommand: SelectedProviderSlashCommand | null;
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -437,6 +428,11 @@ export interface ChatComposerProps {
 
   // Context window
   activeThreadActivities: Thread["activities"] | undefined;
+  queuedFollowUps: ReadonlyArray<{
+    id: string;
+    preview: string;
+    description: string;
+  }>;
 
   // Misc
   resolvedTheme: "light" | "dark";
@@ -456,6 +452,8 @@ export interface ChatComposerProps {
 
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
+  onSteerQueuedFollowUp: (followUpId: string) => void;
+  onDismissQueuedFollowUp: (followUpId: string) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
@@ -529,10 +527,9 @@ export const ChatComposer = memo(
       activeProjectDefaultModelSelection,
       activeThreadModelSelection,
       activeThreadActivities,
+      queuedFollowUps,
       resolvedTheme,
       settings,
-      keybindings,
-      terminalOpen,
       gitCwd,
       promptRef,
       composerImagesRef,
@@ -540,6 +537,8 @@ export const ChatComposer = memo(
       shouldAutoScrollRef,
       scheduleStickToBottom,
       onSend,
+      onSteerQueuedFollowUp,
+      onDismissQueuedFollowUp,
       onInterrupt,
       onImplementPlanInNewThread,
       onRespondToApproval,
@@ -585,6 +584,9 @@ export const ChatComposer = memo(
     );
     const syncComposerDraftPersistedAttachments = useComposerDraftStore(
       (store) => store.syncPersistedAttachments,
+    );
+    const setComposerDraftProviderSlashCommand = useComposerDraftStore(
+      (store) => store.setProviderSlashCommand,
     );
     const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
 
@@ -704,6 +706,8 @@ export const ChatComposer = memo(
       projectModelSelection: activeProjectDefaultModelSelection,
       settings,
     });
+    const activeComposerModelOptions =
+      composerModelOptions?.[selectedInstanceId] ?? composerModelOptions?.[selectedProvider];
 
     // Resolve the active instance's snapshot by `instanceId` so a custom
     // instance gets its own slash commands, skills, and model list — not
@@ -728,9 +732,9 @@ export const ChatComposer = memo(
           model: selectedModel,
           models: selectedProviderModels,
           prompt,
-          modelOptions: composerModelOptions?.[selectedProvider],
+          modelOptions: activeComposerModelOptions,
         }),
-      [composerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
+      [activeComposerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
     );
 
     const selectedPromptEffort = composerProviderState.promptEffort;
@@ -769,14 +773,59 @@ export const ChatComposer = memo(
         ? selectedModelForPicker
         : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
     }, [modelOptionsByInstance, selectedInstanceId, selectedModelForPicker, selectedProvider]);
+    const selectedProviderSlashCommand = useMemo<SelectedProviderSlashCommand | null>(() => {
+      const draftCommand = composerDraft.providerSlashCommand;
+      if (!draftCommand || draftCommand.provider !== selectedProvider) {
+        return null;
+      }
+      const command = (selectedProviderStatus?.slashCommands ?? []).find(
+        (candidate) => candidate.name.toLowerCase() === draftCommand.commandName,
+      );
+      return {
+        provider: draftCommand.provider,
+        command: command ?? { name: draftCommand.commandName },
+      };
+    }, [composerDraft.providerSlashCommand, selectedProvider, selectedProviderStatus]);
+    const updateSelectedProviderSlashCommand = useCallback(
+      (command: SelectedProviderSlashCommand | null) => {
+        const draftCommand: ComposerProviderSlashCommandDraft | null = command
+          ? {
+              provider: command.provider,
+              commandName: command.command.name,
+            }
+          : null;
+        setComposerDraftProviderSlashCommand(composerDraftTarget, draftCommand);
+      },
+      [composerDraftTarget, setComposerDraftProviderSlashCommand],
+    );
+
+    useEffect(() => {
+      const draftCommand = composerDraft.providerSlashCommand;
+      if (draftCommand && draftCommand.provider !== selectedProvider) {
+        setComposerDraftProviderSlashCommand(composerDraftTarget, null);
+      }
+    }, [
+      composerDraft.providerSlashCommand,
+      composerDraftTarget,
+      selectedProvider,
+      setComposerDraftProviderSlashCommand,
+    ]);
 
     // ------------------------------------------------------------------
     // Context window
     // ------------------------------------------------------------------
-    const activeContextWindow = useMemo(
-      () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
-      [activeThreadActivities],
+    const activeUsageSnapshot = useMemo(
+      () =>
+        deriveProviderUsageSnapshots(providerStatuses, activeThreadActivities ?? []).find(
+          (candidate) => candidate.entry.instanceId === selectedInstanceId,
+        ) ?? null,
+      [activeThreadActivities, providerStatuses, selectedInstanceId],
     );
+    const activeContextWindow = activeUsageSnapshot?.contextWindow ?? null;
+    const activeTokenUsage = useMemo(() => {
+      const totals = activeUsageSnapshot?.tokenUsage.totals ?? null;
+      return totals && hasProviderTokenUsageTotals(totals) ? totals : null;
+    }, [activeUsageSnapshot]);
 
     // ------------------------------------------------------------------
     // Composer-local state
@@ -792,7 +841,6 @@ export const ChatComposer = memo(
       null,
     );
     const [isDragOverComposer, setIsDragOverComposer] = useState(false);
-    const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
     const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
     const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
     const [isComposerFocused, setIsComposerFocused] = useState(false);
@@ -805,6 +853,7 @@ export const ChatComposer = memo(
     const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
     const composerFormRef = useRef<HTMLFormElement>(null);
     const composerSurfaceRef = useRef<HTMLDivElement>(null);
+    const composerImageInputRef = useRef<HTMLInputElement>(null);
     const composerFormHeightRef = useRef(0);
     const composerSelectLockRef = useRef(false);
     const composerMenuOpenRef = useRef(false);
@@ -828,6 +877,8 @@ export const ChatComposer = memo(
         }),
       [composerImages.length, composerTerminalContexts, prompt],
     );
+    const hasComposerCommand = selectedProviderSlashCommand !== null;
+    const hasComposerSendableContent = composerSendState.hasSendableContent || hasComposerCommand;
 
     // ------------------------------------------------------------------
     // Derived: composer trigger / menu
@@ -888,17 +939,20 @@ export const ChatComposer = memo(
             description: "Switch this thread back to normal build mode",
           },
         ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-        const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-          (command) => ({
+        const builtInSlashCommandNames = new Set(
+          builtInSlashCommandItems.map((item) => item.command.toLowerCase()),
+        );
+        const query = composerTrigger.query.trim().toLowerCase();
+        const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? [])
+          .filter((command) => !builtInSlashCommandNames.has(command.name.toLowerCase()))
+          .map((command) => ({
             id: `provider-slash-command:${selectedProvider}:${command.name}`,
             type: "provider-slash-command" as const,
             provider: selectedProvider,
             command,
             label: `/${command.name}`,
             description: command.description ?? command.input?.hint ?? "Run provider command",
-          }),
-        );
-        const query = composerTrigger.query.trim().toLowerCase();
+          }));
         const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
         if (!query) {
           return slashCommandItems;
@@ -973,11 +1027,11 @@ export const ChatComposer = memo(
       if (showPlanFollowUpPrompt) {
         return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
       }
-      return `idle:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
+      return `idle:${hasComposerSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
     }, [
       activePendingIsResponding,
       activePendingProgress,
-      composerSendState.hasSendableContent,
+      hasComposerSendableContent,
       isConnecting,
       isPreparingWorktree,
       isSendBusy,
@@ -1019,26 +1073,29 @@ export const ChatComposer = memo(
       [composerDraftTarget, promptRef, scheduleComposerFocus, setComposerDraftPrompt],
     );
 
-    const providerTraitsMenuContent = renderProviderTraitsMenuContent({
-      provider: selectedProvider,
-      ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
-      ...(routeKind === "draft" && draftId ? { draftId } : {}),
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: composerModelOptions?.[selectedProvider],
-      prompt,
-      onPromptChange: setPromptFromTraits,
-    });
-    const providerTraitsPicker = renderProviderTraitsPicker({
-      provider: selectedProvider,
-      ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
-      ...(routeKind === "draft" && draftId ? { draftId } : {}),
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: composerModelOptions?.[selectedProvider],
-      prompt,
-      onPromptChange: setPromptFromTraits,
-    });
+    const composerTraitStatusItems = useMemo(
+      () =>
+        getComposerTraitStatusItems({
+          provider: selectedProvider,
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: activeComposerModelOptions,
+          prompt,
+          includePrimarySelect: false,
+        }),
+      [activeComposerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
+    );
+    const showFastModeToggle = useMemo(
+      () =>
+        hasComposerFastModeControl({
+          provider: selectedProvider,
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: activeComposerModelOptions,
+          prompt,
+        }),
+      [activeComposerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
+    );
     const pendingPrimaryAction = useMemo(
       () =>
         activePendingProgress
@@ -1053,8 +1110,9 @@ export const ChatComposer = memo(
       [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
     );
     const collapsedComposerPrimaryActionDisabled =
-      phase === "running" || isSendBusy || isConnecting || !composerSendState.hasSendableContent;
-    const collapsedComposerPrimaryActionLabel = "Send message";
+      isSendBusy || isConnecting || !hasComposerSendableContent;
+    const collapsedComposerPrimaryActionLabel =
+      phase === "running" ? "Queue follow-up" : "Send message";
     const showMobilePendingAnswerActions =
       isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -1224,24 +1282,17 @@ export const ChatComposer = memo(
       const measureComposerFormWidth = () => composerForm.clientWidth;
       const measureFooterCompactness = () => {
         const composerFormWidth = measureComposerFormWidth();
-        const footerCompact = shouldUseCompactComposerFooter(composerFormWidth, {
+        const primaryActionsCompact = shouldUseCompactComposerPrimaryActions(composerFormWidth, {
           hasWideActions: composerFooterHasWideActions,
         });
-        const primaryActionsCompact =
-          footerCompact &&
-          shouldUseCompactComposerPrimaryActions(composerFormWidth, {
-            hasWideActions: composerFooterHasWideActions,
-          });
         return {
           primaryActionsCompact,
-          footerCompact,
         };
       };
 
       composerFormHeightRef.current = composerForm.getBoundingClientRect().height;
       const initialCompactness = measureFooterCompactness();
       setIsComposerPrimaryActionsCompact(initialCompactness.primaryActionsCompact);
-      setIsComposerFooterCompact(initialCompactness.footerCompact);
       if (typeof ResizeObserver === "undefined") return;
 
       const observer = new ResizeObserver((entries) => {
@@ -1252,9 +1303,6 @@ export const ChatComposer = memo(
           previous === nextCompactness.primaryActionsCompact
             ? previous
             : nextCompactness.primaryActionsCompact,
-        );
-        setIsComposerFooterCompact((previous) =>
-          previous === nextCompactness.footerCompact ? previous : nextCompactness.footerCompact,
         );
         const nextHeight = entry.contentRect.height;
         const previousHeight = composerFormHeightRef.current;
@@ -1522,19 +1570,16 @@ export const ChatComposer = memo(
           return;
         }
         if (item.type === "provider-slash-command") {
-          const replacement = `/${item.command.name} `;
-          const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
-            snapshot.value,
-            trigger.rangeEnd,
-            replacement,
-          );
-          const applied = applyPromptReplacement(
-            trigger.rangeStart,
-            replacementRangeEnd,
-            replacement,
-            { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
-          );
+          const replacementRangeEnd =
+            snapshot.value[trigger.rangeEnd] === " " ? trigger.rangeEnd + 1 : trigger.rangeEnd;
+          const applied = applyPromptReplacement(trigger.rangeStart, replacementRangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
+          });
           if (applied) {
+            updateSelectedProviderSlashCommand({
+              provider: item.provider,
+              command: item.command,
+            });
             setComposerHighlightedItemId(null);
           }
           return;
@@ -1558,7 +1603,12 @@ export const ChatComposer = memo(
           return;
         }
       },
-      [applyPromptReplacement, handleInteractionModeChange, resolveActiveComposerTrigger],
+      [
+        applyPromptReplacement,
+        handleInteractionModeChange,
+        resolveActiveComposerTrigger,
+        updateSelectedProviderSlashCommand,
+      ],
     );
 
     const onComposerMenuItemHighlighted = useCallback(
@@ -1605,11 +1655,11 @@ export const ChatComposer = memo(
       if (activePendingProgress) {
         return activePendingProgress.isLastQuestion && Boolean(activePendingResolvedAnswers);
       }
-      return showPlanFollowUpPrompt || composerSendState.hasSendableContent;
+      return showPlanFollowUpPrompt || hasComposerSendableContent;
     }, [
       activePendingProgress,
       activePendingResolvedAnswers,
-      composerSendState.hasSendableContent,
+      hasComposerSendableContent,
       isConnecting,
       isMobileViewport,
       isSendBusy,
@@ -1653,7 +1703,7 @@ export const ChatComposer = memo(
     // Callbacks: command key
     // ------------------------------------------------------------------
     const onComposerCommandKey = (
-      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+      key: "ArrowDown" | "ArrowUp" | "Enter" | "Escape" | "Tab",
       event: KeyboardEvent,
     ) => {
       if (key === "Tab" && event.shiftKey) {
@@ -1678,6 +1728,10 @@ export const ChatComposer = memo(
           return true;
         }
       }
+      if (key === "Escape" && selectedProviderSlashCommand !== null) {
+        updateSelectedProviderSlashCommand(null);
+        return true;
+      }
       if (key === "Enter" && !event.shiftKey) {
         submitComposer();
         return true;
@@ -1688,50 +1742,73 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     // Callbacks: images
     // ------------------------------------------------------------------
-    const addComposerImages = (files: File[]) => {
-      if (!activeThreadId || files.length === 0) return;
-      if (pendingUserInputs.length > 0) {
-        toastManager.add({
-          type: "error",
-          title: "Attach images after answering plan questions.",
-        });
-        return;
-      }
-      const nextImages: ComposerImageAttachment[] = [];
-      let nextImageCount = composerImagesRef.current.length;
-      let error: string | null = null;
-      for (const file of files) {
-        if (!file.type.startsWith("image/")) {
-          error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-          continue;
+    const addComposerImages = useCallback(
+      (files: File[]) => {
+        if (!activeThreadId || files.length === 0) return;
+        if (pendingUserInputs.length > 0) {
+          toastManager.add({
+            type: "error",
+            title: "Attach images after answering plan questions.",
+          });
+          return;
         }
-        if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-          error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
-          continue;
+        const nextImages: ComposerImageAttachment[] = [];
+        let nextImageCount = composerImagesRef.current.length;
+        let error: string | null = null;
+        for (const file of files) {
+          if (!file.type.startsWith("image/")) {
+            error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
+            continue;
+          }
+          if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+            error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
+            continue;
+          }
+          if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+            error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
+            break;
+          }
+          const previewUrl = URL.createObjectURL(file);
+          nextImages.push({
+            type: "image",
+            id: randomUUID(),
+            name: file.name || "image",
+            mimeType: file.type,
+            sizeBytes: file.size,
+            previewUrl,
+            file,
+          });
+          nextImageCount += 1;
         }
-        if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-          error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-          break;
+        if (nextImages.length === 1 && nextImages[0]) {
+          addComposerImage(nextImages[0]);
+        } else if (nextImages.length > 1) {
+          addComposerImagesToDraft(nextImages);
         }
-        const previewUrl = URL.createObjectURL(file);
-        nextImages.push({
-          type: "image",
-          id: randomUUID(),
-          name: file.name || "image",
-          mimeType: file.type,
-          sizeBytes: file.size,
-          previewUrl,
-          file,
-        });
-        nextImageCount += 1;
-      }
-      if (nextImages.length === 1 && nextImages[0]) {
-        addComposerImage(nextImages[0]);
-      } else if (nextImages.length > 1) {
-        addComposerImagesToDraft(nextImages);
-      }
-      setThreadError(activeThreadId, error);
-    };
+        setThreadError(activeThreadId, error);
+      },
+      [
+        activeThreadId,
+        addComposerImage,
+        addComposerImagesToDraft,
+        composerImagesRef,
+        pendingUserInputs.length,
+        setThreadError,
+      ],
+    );
+
+    const onComposerImageInputChange = useCallback(
+      (event: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(event.currentTarget.files ?? []);
+        event.currentTarget.value = "";
+        addComposerImages(files);
+      },
+      [addComposerImages],
+    );
+
+    const openComposerImageInput = useCallback(() => {
+      composerImageInputRef.current?.click();
+    }, []);
 
     const removeComposerImage = (imageId: string) => {
       removeComposerImageFromDraft(imageId);
@@ -1909,10 +1986,14 @@ export const ChatComposer = memo(
             composerEditorRef.current?.focusAt(nextCollapsedCursor);
           });
         },
+        setProviderSlashCommand: (command: SelectedProviderSlashCommand | null) => {
+          updateSelectedProviderSlashCommand(command);
+        },
         getSendContext: () => ({
           prompt: promptRef.current,
           images: composerImagesRef.current,
           terminalContexts: composerTerminalContextsRef.current,
+          selectedProviderSlashCommand,
           selectedPromptEffort,
           selectedModelOptionsForDispatch,
           selectedModelSelection,
@@ -1932,12 +2013,14 @@ export const ChatComposer = memo(
         composerTerminalContextsRef,
         isComposerModelPickerOpen,
         readComposerSnapshot,
+        selectedProviderSlashCommand,
         selectedModel,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
         selectedPromptEffort,
         selectedProvider,
         selectedProviderModels,
+        updateSelectedProviderSlashCommand,
       ],
     );
 
@@ -1950,6 +2033,15 @@ export const ChatComposer = memo(
         className="mx-auto w-full min-w-0 max-w-208"
         data-chat-composer-form="true"
       >
+        <input
+          ref={composerImageInputRef}
+          className="hidden"
+          type="file"
+          accept="image/*"
+          multiple
+          tabIndex={-1}
+          onChange={onComposerImageInputChange}
+        />
         <div
           className={cn(
             "group rounded-[22px] p-px transition-colors duration-200",
@@ -1988,16 +2080,36 @@ export const ChatComposer = memo(
               scheduleComposerCollapseCheck();
             }}
           >
+            {!isComposerCollapsedMobile && queuedFollowUps.length > 0 ? (
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <ComposerQueuedFollowUpPanel
+                  followUps={queuedFollowUps}
+                  onSteer={onSteerQueuedFollowUp}
+                  onDismiss={onDismissQueuedFollowUp}
+                />
+              </div>
+            ) : null}
+
             {!isComposerCollapsedMobile &&
               (activePendingApproval ? (
-                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <div
+                  className={cn(
+                    "border-b border-border/65 bg-muted/20",
+                    queuedFollowUps.length === 0 ? "rounded-t-[19px]" : null,
+                  )}
+                >
                   <ComposerPendingApprovalPanel
                     approval={activePendingApproval}
                     pendingCount={pendingApprovals.length}
                   />
                 </div>
               ) : pendingUserInputs.length > 0 ? (
-                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <div
+                  className={cn(
+                    "border-b border-border/65 bg-muted/20",
+                    queuedFollowUps.length === 0 ? "rounded-t-[19px]" : null,
+                  )}
+                >
                   <ComposerPendingUserInputPanel
                     pendingUserInputs={pendingUserInputs}
                     respondingRequestIds={respondingRequestIds}
@@ -2008,7 +2120,12 @@ export const ChatComposer = memo(
                   />
                 </div>
               ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-                <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                <div
+                  className={cn(
+                    "border-b border-border/65 bg-muted/20",
+                    queuedFollowUps.length === 0 ? "rounded-t-[19px]" : null,
+                  )}
+                >
                   <ComposerPlanFollowUpBanner
                     key={activeProposedPlan.id}
                     planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
@@ -2109,7 +2226,11 @@ export const ChatComposer = memo(
                   {activePendingProgress
                     ? activePendingProgress.customAnswer ||
                       "Type your own answer, or leave this blank to use the selected option"
-                    : prompt.trim() || "Ask anything..."}
+                    : selectedProviderSlashCommand
+                      ? `/${selectedProviderSlashCommand.command.name}${
+                          prompt.trim() ? ` ${prompt.trim()}` : ""
+                        }`
+                      : prompt.trim() || "Ask anything..."}
                 </button>
                 <button
                   type="button"
@@ -2137,8 +2258,8 @@ export const ChatComposer = memo(
 
             <div
               className={cn(
-                "relative px-3 pb-2 sm:px-4",
-                hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
+                "relative px-3 pb-1.5 sm:px-4",
+                hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3 sm:pt-3.5",
                 isComposerCollapsedMobile && "hidden",
               )}
             >
@@ -2160,6 +2281,33 @@ export const ChatComposer = memo(
                   />
                 </div>
               )}
+
+              {!isComposerCollapsedMobile &&
+                !isComposerApprovalState &&
+                pendingUserInputs.length === 0 &&
+                selectedProviderSlashCommand !== null && (
+                  <div className="mb-2 flex min-w-0 items-center gap-2 rounded-lg border border-border/70 bg-muted/25 px-2.5 py-1.5 text-xs">
+                    <span className="inline-flex shrink-0 items-center gap-1.5 font-medium text-foreground">
+                      <BotIcon className="size-3.5 text-muted-foreground/80" />/
+                      {selectedProviderSlashCommand.command.name}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground/70">
+                      {selectedProviderSlashCommand.command.input?.hint ??
+                        selectedProviderSlashCommand.command.description ??
+                        "Provider command"}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="size-6 shrink-0"
+                      aria-label={`Remove /${selectedProviderSlashCommand.command.name}`}
+                      onClick={() => updateSelectedProviderSlashCommand(null)}
+                    >
+                      <XIcon />
+                    </Button>
+                  </div>
+                )}
 
               {!isComposerCollapsedMobile &&
                 !isComposerApprovalState &&
@@ -2246,7 +2394,10 @@ export const ChatComposer = memo(
                       : []
                   }
                   skills={selectedProviderStatus?.skills ?? []}
-                  {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
+                  className={cn(
+                    "min-h-14.5 sm:min-h-15",
+                    showMobilePendingAnswerActions && "max-sm:pb-11",
+                  )}
                   onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                   onChange={onPromptChange}
                   onCommandKeyDown={onComposerCommandKey}
@@ -2267,7 +2418,7 @@ export const ChatComposer = memo(
                               }`
                             : phase === "disconnected"
                               ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @tag files/folders, or use / to show available commands"
+                              : "Ask anything, @ files, / commands"
                   }
                   disabled={
                     isConnecting ||
@@ -2313,24 +2464,45 @@ export const ChatComposer = memo(
             ) : (
               <div
                 data-chat-composer-footer="true"
-                data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
+                data-chat-composer-footer-compact="true"
                 className={cn(
-                  "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
-                  isComposerFooterCompact ? "gap-1.5" : "gap-2 sm:gap-0",
+                  "flex min-w-0 flex-nowrap items-center justify-between gap-1.5 overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
                   showMobilePendingAnswerActions && "hidden sm:flex",
                 )}
               >
                 <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  <ProviderModelPicker
-                    compact={isComposerFooterCompact}
+                  <CompactComposerControlsMenu
+                    activePlan={showPlanSidebarToggle}
+                    canAddImage={Boolean(activeThreadId) && !isComposerApprovalState}
+                    fastModeControl={
+                      showFastModeToggle ? (
+                        <ComposerFastModeMenuCheckboxItem
+                          instanceId={selectedInstanceId}
+                          provider={selectedProvider}
+                          {...(routeKind === "server" ? { threadRef: routeThreadRef } : {})}
+                          {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                          model={selectedModel}
+                          models={selectedProviderModels}
+                          modelOptions={activeComposerModelOptions}
+                          prompt={prompt}
+                        />
+                      ) : null
+                    }
+                    interactionMode={interactionMode}
+                    planSidebarLabel={planSidebarLabel}
+                    planSidebarOpen={planSidebarOpen}
+                    showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                    onAddImage={openComposerImageInput}
+                    onInteractionModeChange={handleInteractionModeChange}
+                    onTogglePlanSidebar={togglePlanSidebar}
+                  />
+                  <ComposerModelDropdown
                     activeInstanceId={selectedInstanceId}
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
                     lockedContinuationGroupKey={lockedContinuationGroupKey}
                     instanceEntries={providerInstanceEntries}
-                    keybindings={keybindings}
                     modelOptionsByInstance={modelOptionsByInstance}
-                    terminalOpen={terminalOpen}
                     open={isComposerModelPickerOpen}
                     {...(composerProviderState.modelPickerIconClassName
                       ? {
@@ -2344,45 +2516,50 @@ export const ChatComposer = memo(
                     onInstanceModelChange={onProviderModelSelect}
                   />
 
-                  {isComposerFooterCompact ? (
-                    <CompactComposerControlsMenu
-                      activePlan={showPlanSidebarToggle}
-                      interactionMode={interactionMode}
-                      planSidebarLabel={planSidebarLabel}
-                      planSidebarOpen={planSidebarOpen}
-                      runtimeMode={runtimeMode}
-                      showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
-                      traitsMenuContent={providerTraitsMenuContent}
-                      onToggleInteractionMode={toggleInteractionMode}
-                      onTogglePlanSidebar={togglePlanSidebar}
-                      onRuntimeModeChange={handleRuntimeModeChange}
-                    />
-                  ) : (
-                    <>
-                      {providerTraitsPicker ? (
-                        <>
-                          <Separator
-                            orientation="vertical"
-                            className="mx-0.5 hidden h-4 sm:block"
-                          />
-                          {providerTraitsPicker}
-                        </>
-                      ) : null}
-                      <ComposerFooterModeControls
-                        showInteractionModeToggle={
-                          composerProviderControls.showInteractionModeToggle
-                        }
-                        interactionMode={interactionMode}
-                        runtimeMode={runtimeMode}
-                        showPlanToggle={showPlanSidebarToggle}
-                        planSidebarLabel={planSidebarLabel}
-                        planSidebarOpen={planSidebarOpen}
-                        onToggleInteractionMode={toggleInteractionMode}
-                        onRuntimeModeChange={handleRuntimeModeChange}
-                        onTogglePlanSidebar={togglePlanSidebar}
-                      />
-                    </>
-                  )}
+                  <ComposerReasoningDropdown
+                    instanceId={selectedInstanceId}
+                    provider={selectedProvider}
+                    {...(routeKind === "server" ? { threadRef: routeThreadRef } : {})}
+                    {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                    model={selectedModel}
+                    models={selectedProviderModels}
+                    modelOptions={activeComposerModelOptions}
+                    prompt={prompt}
+                    onPromptChange={setPromptFromTraits}
+                  />
+                  <ComposerContextWindowDropdown
+                    instanceId={selectedInstanceId}
+                    provider={selectedProvider}
+                    {...(routeKind === "server" ? { threadRef: routeThreadRef } : {})}
+                    {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                    model={selectedModel}
+                    models={selectedProviderModels}
+                    modelOptions={activeComposerModelOptions}
+                    prompt={prompt}
+                  />
+                  <ComposerAgentDropdown
+                    instanceId={selectedInstanceId}
+                    provider={selectedProvider}
+                    {...(routeKind === "server" ? { threadRef: routeThreadRef } : {})}
+                    {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                    model={selectedModel}
+                    models={selectedProviderModels}
+                    modelOptions={activeComposerModelOptions}
+                    prompt={prompt}
+                  />
+                  <ComposerFooterStatusStrip
+                    traitItems={composerTraitStatusItems}
+                    showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                    interactionMode={interactionMode}
+                    showPlanToggle={showPlanSidebarToggle}
+                    planSidebarLabel={planSidebarLabel}
+                    planSidebarOpen={planSidebarOpen}
+                    onTogglePlanSidebar={togglePlanSidebar}
+                  />
+                  <ComposerRuntimeModeDropdown
+                    runtimeMode={runtimeMode}
+                    onRuntimeModeChange={handleRuntimeModeChange}
+                  />
                 </div>
 
                 {/* Right side: send / stop button */}
@@ -2396,6 +2573,7 @@ export const ChatComposer = memo(
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     activeContextWindow={activeContextWindow}
+                    activeTokenUsage={activeTokenUsage}
                     pendingAction={pendingPrimaryAction}
                     isRunning={phase === "running"}
                     showPlanFollowUpPrompt={
@@ -2406,7 +2584,7 @@ export const ChatComposer = memo(
                     isConnecting={isConnecting}
                     isEnvironmentUnavailable={environmentUnavailable !== null}
                     isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={composerSendState.hasSendableContent}
+                    hasSendableContent={hasComposerSendableContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}

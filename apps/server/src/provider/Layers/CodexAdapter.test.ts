@@ -29,9 +29,14 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { parseCodexProviderSlashCommand } from "./CodexSlashCommands.ts";
 import {
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeGoalCommandInput,
+  type CodexSessionRuntimeRenameInput,
+  type CodexSessionRuntimeReviewInput,
   type CodexSessionRuntimeSendTurnInput,
+  type CodexSessionRuntimeSteerTurnInput,
   type CodexSessionRuntimeShape,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
@@ -69,6 +74,46 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       Promise.resolve({
         threadId: this.options.threadId,
         turnId: asTurnId("turn-1"),
+      }),
+  );
+
+  public readonly steerTurnImpl = vi.fn(
+    (_input: CodexSessionRuntimeSteerTurnInput): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("turn-1"),
+      }),
+  );
+
+  public readonly compactThreadImpl = vi.fn(
+    (): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("compact-turn-1"),
+      }),
+  );
+
+  public readonly startReviewImpl = vi.fn(
+    (_input: CodexSessionRuntimeReviewInput): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("review-turn-1"),
+      }),
+  );
+
+  public readonly runGoalCommandImpl = vi.fn(
+    (_input: CodexSessionRuntimeGoalCommandInput): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("goal-turn-1"),
+      }),
+  );
+
+  public readonly renameThreadImpl = vi.fn(
+    (_input: CodexSessionRuntimeRenameInput): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("rename-turn-1"),
       }),
   );
 
@@ -118,6 +163,26 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
+  }
+
+  steerTurn(input: CodexSessionRuntimeSteerTurnInput) {
+    return Effect.promise(() => this.steerTurnImpl(input));
+  }
+
+  compactThread() {
+    return Effect.promise(() => this.compactThreadImpl());
+  }
+
+  startReview(input: CodexSessionRuntimeReviewInput) {
+    return Effect.promise(() => this.startReviewImpl(input));
+  }
+
+  runGoalCommand(input: CodexSessionRuntimeGoalCommandInput) {
+    return Effect.promise(() => this.runGoalCommandImpl(input));
+  }
+
+  renameThread(input: CodexSessionRuntimeRenameInput) {
+    return Effect.promise(() => this.renameThreadImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -209,6 +274,34 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listBindings: () => Effect.succeed([]),
 });
 
+it("parses supported Codex provider slash commands", () => {
+  assert.deepStrictEqual(parseCodexProviderSlashCommand("/review focus on tests"), {
+    command: "review",
+    args: "focus on tests",
+  });
+  assert.deepStrictEqual(parseCodexProviderSlashCommand(" /compact "), {
+    command: "compact",
+    args: "",
+  });
+  assert.deepStrictEqual(parseCodexProviderSlashCommand("/goal make the app faster"), {
+    command: "goal",
+    args: "make the app faster",
+  });
+  assert.deepStrictEqual(parseCodexProviderSlashCommand("/fast status"), {
+    command: "fast",
+    args: "status",
+  });
+  assert.deepStrictEqual(parseCodexProviderSlashCommand("/rollout"), {
+    command: "rollout",
+    args: "",
+  });
+  assert.deepStrictEqual(parseCodexProviderSlashCommand("/test-approval"), {
+    command: "test-approval",
+    args: "",
+  });
+  assert.equal(parseCodexProviderSlashCommand("/unknown"), null);
+});
+
 const validationRuntimeFactory = makeRuntimeFactory();
 const validationLayer = it.layer(
   Layer.effect(
@@ -251,7 +344,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       assert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
     }),
   );
-  it.effect("maps codex model options before starting a session", () =>
+  it.effect("maps supported codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationRuntimeFactory.factory.mockClear();
       const adapter = yield* CodexAdapter;
@@ -261,6 +354,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
         threadId: asThreadId("thread-1"),
         modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
           { id: "fastMode", value: true },
+          { id: "contextWindow", value: "400k" },
         ]),
         runtimeMode: "full-access",
       });
@@ -268,6 +362,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       assert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
         binaryPath: "codex",
         cwd: process.cwd(),
+        mcpEnabled: true,
         model: "gpt-5.3-codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
         serviceTier: "fast",
@@ -345,6 +440,220 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "fast",
       });
+    }),
+  );
+
+  it.effect("routes /review through the native Codex review request", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-review"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      runtime.startReviewImpl.mockClear();
+
+      const turn = yield* adapter.sendTurn({
+        threadId: asThreadId("sess-review"),
+        input: "/review focus on regressions",
+        attachments: [],
+      });
+
+      assert.equal(turn.turnId, "review-turn-1");
+      assert.deepStrictEqual(runtime.startReviewImpl.mock.calls[0]?.[0], {
+        instructions: "focus on regressions",
+      });
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("routes /compact through the native Codex compaction request", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-compact"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      runtime.compactThreadImpl.mockClear();
+
+      const turn = yield* adapter.sendTurn({
+        threadId: asThreadId("sess-compact"),
+        input: "/compact",
+        attachments: [],
+      });
+
+      assert.equal(turn.turnId, "compact-turn-1");
+      assert.equal(runtime.compactThreadImpl.mock.calls.length, 1);
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("translates /init into the Codex AGENTS.md prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-init"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* adapter.sendTurn({
+        threadId: asThreadId("sess-init"),
+        input: "/init",
+        attachments: [],
+      });
+
+      const sent = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      assert.ok(sent?.input?.includes("Generate a file named AGENTS.md"));
+      assert.ok(sent?.input?.includes("Repository Guidelines"));
+    }),
+  );
+
+  it.effect("routes /goal through the runtime goal command", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-goal"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      runtime.runGoalCommandImpl.mockClear();
+
+      const turn = yield* adapter.sendTurn({
+        threadId: asThreadId("sess-goal"),
+        input: "/goal make slash commands explicit",
+        attachments: [],
+      });
+
+      assert.equal(turn.turnId, "goal-turn-1");
+      assert.deepStrictEqual(runtime.runGoalCommandImpl.mock.calls[0]?.[0], {
+        args: "make slash commands explicit",
+      });
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("routes /rename through the native Codex thread-name request", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-rename"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      runtime.renameThreadImpl.mockClear();
+
+      const turn = yield* adapter.sendTurn({
+        threadId: asThreadId("sess-rename"),
+        input: "/rename Performance work",
+        attachments: [],
+      });
+
+      assert.equal(turn.turnId, "rename-turn-1");
+      assert.deepStrictEqual(runtime.renameThreadImpl.mock.calls[0]?.[0], {
+        name: "Performance work",
+      });
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects recognized Codex UI commands instead of sending them as prompts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-fast"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId: asThreadId("sess-fast"),
+          input: "/fast status",
+          attachments: [],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("steers the active Codex turn through the runtime steer request", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-steer"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      runtime.steerTurnImpl.mockClear();
+      const steerTurn = adapter.steerTurn;
+      assert.ok(steerTurn);
+
+      const turn = yield* steerTurn({
+        threadId: asThreadId("sess-steer"),
+        turnId: asTurnId("turn-active"),
+        input: "apply this to the active turn",
+        attachments: [],
+      });
+
+      assert.equal(turn.turnId, "turn-1");
+      assert.deepStrictEqual(runtime.steerTurnImpl.mock.calls[0]?.[0], {
+        turnId: asTurnId("turn-active"),
+        input: "apply this to the active turn",
+      });
+      assert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects Codex slash commands when steering an active turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-steer-slash"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.steerTurnImpl.mockClear();
+      const steerTurn = adapter.steerTurn;
+      assert.ok(steerTurn);
+
+      const result = yield* steerTurn({
+        threadId: asThreadId("sess-steer-slash"),
+        turnId: asTurnId("turn-active"),
+        input: "/compact",
+        attachments: [],
+      }).pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      assert.equal(runtime.steerTurnImpl.mock.calls.length, 0);
     }),
   );
 
@@ -517,6 +826,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.planMarkdown, "## Final plan\n\n- one\n- two");
+    }),
+  );
+
+  it.effect("maps turn completion even when Codex emits a newer status shape", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-turn-cancelled"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "turn/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-cancelled"),
+        payload: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-cancelled",
+            items: [],
+            status: "cancelled",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "turn.completed");
+      if (firstEvent.value.type !== "turn.completed") {
+        return;
+      }
+      assert.equal(firstEvent.value.turnId, "turn-cancelled");
+      assert.equal(firstEvent.value.payload.state, "cancelled");
     }),
   );
 
@@ -978,6 +1325,72 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         lastOutputTokens: 6,
         lastReasoningOutputTokens: 0,
         compactsAutomatically: true,
+      });
+    }),
+  );
+
+  it.effect("unwraps Codex account rate-limit payloads for usage events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-account-rate-limits-updated"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: new Date().toISOString(),
+        method: "account/rateLimits/updated",
+        payload: {
+          rateLimits: {
+            limitId: "legacy",
+            limitName: "Legacy",
+            primary: {
+              usedPercent: 91,
+            },
+          },
+          rateLimitsByLimitId: {
+            codex: {
+              limitId: "codex",
+              limitName: "Codex",
+              planType: "plus",
+              primary: {
+                usedPercent: 27,
+                windowDurationMins: 300,
+              },
+            },
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "account.rate-limits.updated");
+      if (firstEvent.value.type !== "account.rate-limits.updated") {
+        return;
+      }
+
+      assert.deepEqual(firstEvent.value.payload.rateLimits, {
+        limitId: "legacy",
+        limitName: "Legacy",
+        primary: {
+          usedPercent: 91,
+        },
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: "codex",
+            limitName: "Codex",
+            planType: "plus",
+            primary: {
+              usedPercent: 27,
+              windowDurationMins: 300,
+            },
+          },
+        },
       });
     }),
   );

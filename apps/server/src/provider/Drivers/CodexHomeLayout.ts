@@ -1,7 +1,8 @@
 import * as NodeOS from "node:os";
+import { symlink as nodeSymlink } from "node:fs/promises";
 
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import * as PlatformError from "effect/PlatformError";
 
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -19,6 +20,7 @@ const KNOWN_SHARED_DIRECTORIES = [
   "sqlite",
   "shell_snapshots",
   "worktrees",
+  "agents",
   "skills",
   "plugins",
   "cache",
@@ -110,6 +112,29 @@ function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
   );
 }
 
+const deniedSymlinkErrorCodes = new Set(["EACCES", "EPERM", "ENOTSUP"]);
+
+function getNodeErrorCode(cause: unknown): unknown {
+  return typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+}
+
+function isDeniedSymlinkError(error: PlatformError.PlatformError): boolean {
+  const code = getNodeErrorCode(error.reason.cause);
+  return (
+    deniedSymlinkErrorCodes.has(String(code)) &&
+    (error.reason._tag === "PermissionDenied" || error.reason._tag === "Unknown")
+  );
+}
+
+function sameFileIdentity(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
+  return (
+    left.dev === right.dev &&
+    Option.isSome(left.ino) &&
+    Option.isSome(right.ino) &&
+    left.ino.value === right.ino.value
+  );
+}
+
 const readLinkState = Effect.fn("CodexHomeLayout.readLinkState")(function* (
   fileSystem: FileSystem.FileSystem,
   linkPath: string,
@@ -128,16 +153,70 @@ const readLinkState = Effect.fn("CodexHomeLayout.readLinkState")(function* (
   );
 });
 
+const pathsShareFileIdentity = Effect.fn("CodexHomeLayout.pathsShareFileIdentity")(function* (
+  fileSystem: FileSystem.FileSystem,
+  leftPath: string,
+  rightPath: string,
+) {
+  const result = yield* Effect.all([fileSystem.stat(leftPath), fileSystem.stat(rightPath)]).pipe(
+    Effect.result,
+  );
+  return result._tag === "Success" && sameFileIdentity(result.success[0], result.success[1]);
+});
+
+const createWindowsJunction = (target: string, link: string) =>
+  Effect.tryPromise({
+    try: () => nodeSymlink(target, link, "junction"),
+    catch: (cause) =>
+      new CodexShadowHomeError({
+        detail: "Failed to materialize Codex shadow home.",
+        cause,
+      }),
+  });
+
+const createPortableLink = Effect.fn("CodexHomeLayout.createPortableLink")(function* (
+  fileSystem: FileSystem.FileSystem,
+  target: string,
+  link: string,
+) {
+  const symlinkResult = yield* fileSystem.symlink(target, link).pipe(Effect.result);
+  if (symlinkResult._tag === "Success") return;
+
+  if (process.platform !== "win32" || !isDeniedSymlinkError(symlinkResult.failure)) {
+    return yield* normalizeShadowHomeError(Effect.fail(symlinkResult.failure));
+  }
+
+  const targetInfo = yield* normalizeShadowHomeError(fileSystem.stat(target));
+  if (targetInfo.type === "Directory") {
+    return yield* createWindowsJunction(target, link);
+  }
+
+  if (targetInfo.type === "File") {
+    return yield* normalizeShadowHomeError(fileSystem.link(target, link));
+  }
+
+  return yield* normalizeShadowHomeError(Effect.fail(symlinkResult.failure));
+});
+
 const removePrivateSymlink = Effect.fn("CodexHomeLayout.removePrivateSymlink")(function* (input: {
   readonly fileSystem: FileSystem.FileSystem;
+  readonly sharedPath: string;
   readonly shadowPath: string;
   readonly entryName: string;
 }): Effect.fn.Return<void, CodexShadowHomeError, Path.Path> {
   const path = yield* Path.Path;
+  const sharedPath = path.join(input.sharedPath, input.entryName);
   const privatePath = path.join(input.shadowPath, input.entryName);
   const state = yield* readLinkState(input.fileSystem, privatePath);
   if (state._tag === "Symlink") {
     yield* normalizeShadowHomeError(input.fileSystem.remove(privatePath));
+    return;
+  }
+  if (state._tag === "NotSymlink") {
+    const sharesIdentity = yield* pathsShareFileIdentity(input.fileSystem, sharedPath, privatePath);
+    if (sharesIdentity) {
+      yield* normalizeShadowHomeError(input.fileSystem.remove(privatePath));
+    }
   }
 });
 
@@ -153,19 +232,22 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
   const state = yield* readLinkState(input.fileSystem, link);
 
   if (state._tag === "NotSymlink") {
+    const sharesIdentity = yield* pathsShareFileIdentity(input.fileSystem, target, link);
+    if (sharesIdentity) return;
+
     return yield* new CodexShadowHomeError({
       detail: `Cannot create Codex shadow home because '${link}' already exists and is not a symlink.`,
     });
   }
 
   if (state._tag === "Missing") {
-    return yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    return yield* createPortableLink(input.fileSystem, target, link);
   }
 
   const resolvedExisting = path.resolve(path.dirname(link), state.target);
   if (resolvedExisting !== target) {
     yield* normalizeShadowHomeError(input.fileSystem.remove(link));
-    yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    yield* createPortableLink(input.fileSystem, target, link);
   }
 });
 
@@ -230,6 +312,7 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
         ? Effect.void
         : removePrivateSymlink({
             fileSystem,
+            sharedPath: layout.sharedHomePath,
             shadowPath: effectiveHomePath,
             entryName,
           }),

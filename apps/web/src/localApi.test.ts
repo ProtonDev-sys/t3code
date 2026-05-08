@@ -88,6 +88,26 @@ const rpcClientMock = {
     upsertKeybinding: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
+    codexMcp: {
+      list: vi.fn(),
+      add: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
+    codexAgents: {
+      list: vi.fn(),
+    },
+    codexPlugins: {
+      list: vi.fn(),
+      update: vi.fn(),
+    },
+    codexAutomations: {
+      list: vi.fn(),
+      update: vi.fn(),
+    },
+    codexUsageHistory: {
+      list: vi.fn(),
+    },
     subscribeConfig: vi.fn(),
     subscribeLifecycle: vi.fn(),
     subscribeAuthAccess: vi.fn(),
@@ -570,11 +590,14 @@ describe("wsApi", () => {
 
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
+      autoCleanupEmptyProjects: false,
+      autoCleanupInactiveThreads: false,
       autoOpenPlanSidebar: false,
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       diffIgnoreWhitespace: true,
       diffWordWrap: true,
+      showAdvancedProviderSlashCommands: true,
       favorites: [],
       providerModelPreferences: {},
       sidebarProjectGroupingMode: "repository_path" as const,
@@ -631,11 +654,14 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
+      autoCleanupEmptyProjects: false,
+      autoCleanupInactiveThreads: false,
       autoOpenPlanSidebar: false,
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       diffIgnoreWhitespace: true,
       diffWordWrap: true,
+      showAdvancedProviderSlashCommands: true,
       favorites: [],
       providerModelPreferences: {},
       sidebarProjectGroupingMode: "repository_path" as const,

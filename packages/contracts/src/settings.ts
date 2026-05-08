@@ -29,11 +29,18 @@ export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
 export const ClientSettingsSchema = Schema.Struct({
+  autoCleanupEmptyProjects: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  autoCleanupInactiveThreads: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  showAdvancedProviderSlashCommands: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -148,7 +155,7 @@ export const CodexSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Codex binary used by this instance.",
-        providerSettingsForm: { placeholder: "codex", clearWhenEmpty: "omit" },
+        providerSettingsForm: { placeholder: "Codex binary path", clearWhenEmpty: "omit" },
       }),
     ),
     homePath: TrimmedString.pipe(
@@ -157,7 +164,7 @@ export const CodexSettings = makeProviderSettingsSchema(
         title: "CODEX_HOME path",
         description: "Custom Codex home and config directory.",
         providerSettingsForm: {
-          placeholder: "~/.codex",
+          placeholder: "Codex home directory",
           clearWhenEmpty: "omit",
         },
       }),
@@ -169,7 +176,7 @@ export const CodexSettings = makeProviderSettingsSchema(
         description:
           "Account-specific Codex home. Keeps auth.json separate while sharing state from CODEX_HOME.",
         providerSettingsForm: {
-          placeholder: "~/.codex-t3/personal",
+          placeholder: "Shadow home directory",
           clearWhenEmpty: "omit",
         },
       }),
@@ -195,7 +202,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Claude binary used by this instance.",
-        providerSettingsForm: { placeholder: "claude", clearWhenEmpty: "omit" },
+        providerSettingsForm: { placeholder: "Claude binary path", clearWhenEmpty: "omit" },
       }),
     ),
     homePath: TrimmedString.pipe(
@@ -204,7 +211,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         title: "Claude HOME path",
         description:
           "Custom HOME used when running this Claude instance. Keeps .claude.json and .claude separate.",
-        providerSettingsForm: { placeholder: "~", clearWhenEmpty: "omit" },
+        providerSettingsForm: { placeholder: "Claude home directory", clearWhenEmpty: "omit" },
       }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
@@ -217,7 +224,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         title: "Launch arguments",
         description: "Additional CLI arguments passed on session start.",
         providerSettingsForm: {
-          placeholder: "e.g. --chrome",
+          placeholder: "CLI launch arguments",
           clearWhenEmpty: "omit",
         },
       }),
@@ -239,7 +246,7 @@ export const CursorSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Cursor agent binary.",
-        providerSettingsForm: { placeholder: "agent", clearWhenEmpty: "omit" },
+        providerSettingsForm: { placeholder: "Cursor agent binary path", clearWhenEmpty: "omit" },
       }),
     ),
     apiEndpoint: TrimmedString.pipe(
@@ -248,7 +255,7 @@ export const CursorSettings = makeProviderSettingsSchema(
         title: "API endpoint",
         description: "Override the Cursor API endpoint for this instance.",
         providerSettingsForm: {
-          placeholder: "https://...",
+          placeholder: "Cursor API endpoint URL",
           clearWhenEmpty: "omit",
         },
       }),
@@ -263,6 +270,45 @@ export const CursorSettings = makeProviderSettingsSchema(
   },
 );
 export type CursorSettings = typeof CursorSettings.Type;
+
+export const CopilotSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("copilot").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the GitHub Copilot CLI binary.",
+        providerSettingsForm: {
+          placeholder: "Copilot CLI binary path",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    homePath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "COPILOT_HOME path",
+        description: "Custom Copilot CLI home and config directory.",
+        providerSettingsForm: {
+          placeholder: "Copilot home directory",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "homePath"],
+  },
+);
+export type CopilotSettings = typeof CopilotSettings.Type;
+
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -274,7 +320,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
         title: "Binary path",
         description: "Path to the OpenCode binary.",
         providerSettingsForm: {
-          placeholder: "opencode",
+          placeholder: "OpenCode binary path",
           clearWhenEmpty: "omit",
         },
       }),
@@ -285,7 +331,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
         title: "Server URL",
         description: "Leave blank to let T3 Code spawn the server when needed.",
         providerSettingsForm: {
-          placeholder: "http://127.0.0.1:4096",
+          placeholder: "OpenCode server URL",
           clearWhenEmpty: "omit",
         },
       }),
@@ -297,7 +343,7 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
         description: "Stored in plain text on disk.",
         providerSettingsForm: {
           control: "password",
-          placeholder: "Optional",
+          placeholder: "Server password",
           clearWhenEmpty: "omit",
         },
       }),
@@ -344,6 +390,7 @@ export const ServerSettings = Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    copilot: CopilotSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
@@ -412,6 +459,13 @@ const CursorSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const CopilotSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(Schema.String),
+  homePath: Schema.optionalKey(Schema.String),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
@@ -437,6 +491,7 @@ export const ServerSettingsPatch = Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
       cursor: Schema.optionalKey(CursorSettingsPatch),
+      copilot: Schema.optionalKey(CopilotSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
     }),
   ),
@@ -449,6 +504,8 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  autoCleanupEmptyProjects: Schema.optionalKey(Schema.Boolean),
+  autoCleanupInactiveThreads: Schema.optionalKey(Schema.Boolean),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

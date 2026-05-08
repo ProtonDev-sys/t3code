@@ -1,6 +1,6 @@
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset, SidebarTrigger } from "./ui/sidebar";
-import { isElectron } from "../env";
+import { isDesktopShell } from "../env";
 import { cn } from "~/lib/utils";
 
 export function NoActiveThreadState() {
@@ -10,12 +10,12 @@ export function NoActiveThreadState() {
         <header
           className={cn(
             "border-b border-border px-3 sm:px-5",
-            isElectron
+            isDesktopShell
               ? "drag-region flex h-[52px] items-center wco:h-[env(titlebar-area-height)]"
               : "py-2 sm:py-3",
           )}
         >
-          {isElectron ? (
+          {isDesktopShell ? (
             <span className="text-xs text-muted-foreground/50 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
               No active thread
             </span>
