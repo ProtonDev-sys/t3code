@@ -188,6 +188,39 @@ function readPayloadModel(payload: ProviderEvent["payload"]): string | undefined
   return typeof model === "string" ? trimText(model) : undefined;
 }
 
+function normalizeCodexServiceTier(
+  value: string | undefined,
+): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+  switch (value) {
+    case "fast":
+    case "priority":
+      return "fast";
+    case "flex":
+      return "flex";
+    default:
+      return undefined;
+  }
+}
+
+function readCodexServiceTierOption(
+  modelSelection: ProviderSendTurnInput["modelSelection"],
+  boundInstanceId: ProviderInstanceId,
+): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+  if (modelSelection?.instanceId !== boundInstanceId) {
+    return undefined;
+  }
+  const fastMode = getModelSelectionBooleanOptionValue(modelSelection, "fastMode");
+  if (fastMode === true) {
+    return "fast";
+  }
+  if (fastMode === false) {
+    return undefined;
+  }
+  return normalizeCodexServiceTier(
+    getModelSelectionStringOptionValue(modelSelection, "serviceTier"),
+  );
+}
+
 const FATAL_CODEX_STDERR_SNIPPETS = ["failed to connect to websocket"];
 
 function isFatalCodexProcessStderrMessage(message: string): boolean {
@@ -1498,6 +1531,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
+        const serviceTier = readCodexServiceTierOption(input.modelSelection, boundInstanceId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1513,10 +1547,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
-          ...(input.modelSelection?.instanceId === boundInstanceId &&
-          getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode") === true
-            ? { serviceTier: "fast" }
-            : {}),
+          ...(serviceTier ? { serviceTier } : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
@@ -1686,10 +1717,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
         : undefined;
-    const fastMode =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode")
-        : undefined;
+    const serviceTier = readCodexServiceTierOption(input.modelSelection, boundInstanceId);
     return yield* session.runtime
       .sendTurn({
         ...(promptInput !== undefined ? { input: promptInput } : {}),
@@ -1701,7 +1729,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
             }
           : {}),
-        ...(fastMode === true ? { serviceTier: "fast" } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })

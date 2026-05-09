@@ -147,6 +147,19 @@ describe("buildTurnStartParams", () => {
       ],
     });
   });
+
+  it("normalizes the legacy priority service tier to fast", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Use fast mode",
+        serviceTier: "priority" as never,
+      }),
+    );
+
+    assert.equal(params.serviceTier, "fast");
+  });
 });
 
 describe("applyCodexGoalToPrompt", () => {
@@ -158,7 +171,18 @@ describe("applyCodexGoalToPrompt", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      "Current long-running goal:\nKeep slash commands visible and routed\n\nUser request:\nFix the search lag",
+      [
+        "Current long-running goal:",
+        "Keep slash commands visible and routed",
+        "",
+        "Goal protocol:",
+        "Keep this goal active across turns until it is actually complete.",
+        "Do not present the goal as complete unless all requested work is done.",
+        "When you stop, state whether the goal is complete. If it is incomplete, list the remaining work clearly.",
+        "",
+        "User request:",
+        "Fix the search lag",
+      ].join("\n"),
     );
   });
 
@@ -182,7 +206,18 @@ describe("applyCodexGoalToPrompt", () => {
         createdAt: 1,
         updatedAt: 1,
       }),
-      "Current long-running goal:\nKeep slash commands visible and routed\n\nUser request:\nStart working toward this goal now.",
+      [
+        "Current long-running goal:",
+        "Keep slash commands visible and routed",
+        "",
+        "Goal protocol:",
+        "Keep this goal active across turns until it is actually complete.",
+        "Do not present the goal as complete unless all requested work is done.",
+        "When you stop, state whether the goal is complete. If it is incomplete, list the remaining work clearly.",
+        "",
+        "User request:",
+        "Start working toward this goal now. Continue through the available work before ending the turn.",
+      ].join("\n"),
     );
   });
 });
@@ -235,6 +270,46 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it("normalizes legacy priority service tier before opening a thread", async () => {
+    const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+    const resumed = makeThreadOpenResponse("resumed-thread");
+    const client = {
+      request: <M extends "thread/start" | "thread/resume">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push({ method, payload });
+        return Effect.succeed(resumed as CodexRpc.ClientRequestResponsesByMethod[M]);
+      },
+    };
+
+    await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: "priority" as never,
+        modelContextWindow: undefined,
+        mcpEnabled: true,
+        resumeThreadId: "provider-thread-1",
+      }),
+    );
+
+    assert.deepStrictEqual(calls[0], {
+      method: "thread/resume",
+      payload: {
+        threadId: "provider-thread-1",
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        model: "gpt-5.3-codex",
+        serviceTier: "fast",
+      },
+    });
+  });
+
   it("falls back to thread/start when resume fails recoverably", async () => {
     const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
     const started = makeThreadOpenResponse("fresh-thread");

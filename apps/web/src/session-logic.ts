@@ -96,6 +96,31 @@ export interface ActivePlanState {
   }>;
 }
 
+export interface ActiveGoalState {
+  status: "active" | "paused";
+  objective: string | null;
+  updatedAt: string;
+}
+
+export interface ActiveTaskState {
+  taskId: string;
+  taskType: string | null;
+  summary: string | null;
+  detail: string;
+  status: "running" | "completed" | "failed" | "stopped";
+  updatedAt: string;
+}
+
+export interface ActiveTasksState {
+  running: ActiveTaskState[];
+  completed: ActiveTaskState[];
+}
+
+const EMPTY_ACTIVE_TASKS_STATE: ActiveTasksState = {
+  running: [],
+  completed: [],
+};
+
 export interface LatestProposedPlanState {
   id: OrchestrationProposedPlanId;
   createdAt: string;
@@ -448,6 +473,177 @@ export function deriveActivePlanState(
       : {}),
     steps,
   };
+}
+
+function readPayloadText(payload: Record<string, unknown> | null, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function reduceGoalActivityMessage(
+  current: ActiveGoalState | null,
+  message: string,
+  updatedAt: string,
+): ActiveGoalState | null {
+  const trimmed = message.trim();
+  const setPrefix = "Thread goal set:";
+  const activePrefix = "Goal is active:";
+  const pausedPrefix = "Goal is paused:";
+
+  if (trimmed === "Thread goal cleared." || trimmed === "No active goal is set for this thread.") {
+    return null;
+  }
+  if (trimmed === "Thread goal paused.") {
+    return { status: "paused", objective: current?.objective ?? null, updatedAt };
+  }
+  if (trimmed === "Thread goal resumed.") {
+    return { status: "active", objective: current?.objective ?? null, updatedAt };
+  }
+  if (trimmed.startsWith(setPrefix)) {
+    const objective = trimmed.slice(setPrefix.length).trim();
+    return {
+      status: "active",
+      objective: objective.length > 0 ? objective : null,
+      updatedAt,
+    };
+  }
+  if (trimmed.startsWith(activePrefix)) {
+    const objective = trimmed.slice(activePrefix.length).trim();
+    return {
+      status: "active",
+      objective: objective.length > 0 ? objective : null,
+      updatedAt,
+    };
+  }
+  if (trimmed.startsWith(pausedPrefix)) {
+    const objective = trimmed.slice(pausedPrefix.length).trim();
+    return {
+      status: "paused",
+      objective: objective.length > 0 ? objective : null,
+      updatedAt,
+    };
+  }
+  return current;
+}
+
+export function deriveActiveGoalState(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ActiveGoalState | null {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  let state: ActiveGoalState | null = null;
+
+  for (const activity of ordered) {
+    if (activity.kind !== "task.progress" && activity.kind !== "task.completed") {
+      continue;
+    }
+
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    if (payload?.taskId !== "codex-goal") {
+      continue;
+    }
+
+    const message =
+      readPayloadText(payload, "detail") ??
+      readPayloadText(payload, "summary") ??
+      readPayloadText(payload, "description") ??
+      activity.summary;
+    state = reduceGoalActivityMessage(state, message, activity.createdAt);
+  }
+
+  return state;
+}
+
+function taskPayloadFromActivity(
+  activity: OrchestrationThreadActivity,
+): Record<string, unknown> | null {
+  return activity.payload && typeof activity.payload === "object"
+    ? (activity.payload as Record<string, unknown>)
+    : null;
+}
+
+function readTaskPayloadText(payload: Record<string, unknown> | null, key: string): string | null {
+  const value = payload?.[key];
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function taskStatusFromActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): ActiveTaskState["status"] {
+  if (activity.kind !== "task.completed") {
+    return "running";
+  }
+  switch (payload?.status) {
+    case "failed":
+    case "stopped":
+      return payload.status;
+    default:
+      return "completed";
+  }
+}
+
+export function deriveActiveTasksState(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ActiveTasksState {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const tasksById = new Map<string, ActiveTaskState>();
+
+  for (const activity of ordered) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+
+    const payload = taskPayloadFromActivity(activity);
+    const taskId = readTaskPayloadText(payload, "taskId");
+    if (!taskId || taskId === "codex-goal") {
+      continue;
+    }
+
+    const previous = tasksById.get(taskId);
+    const taskType = readTaskPayloadText(payload, "taskType") ?? previous?.taskType ?? null;
+    const summary = readTaskPayloadText(payload, "summary") ?? previous?.summary ?? null;
+    const detail =
+      readTaskPayloadText(payload, "detail") ??
+      readTaskPayloadText(payload, "description") ??
+      summary ??
+      previous?.detail ??
+      activity.summary;
+
+    tasksById.set(taskId, {
+      taskId,
+      taskType,
+      summary,
+      detail,
+      status: taskStatusFromActivity(activity, payload),
+      updatedAt: activity.createdAt,
+    });
+  }
+
+  if (tasksById.size === 0) {
+    return EMPTY_ACTIVE_TASKS_STATE;
+  }
+
+  const tasks = [...tasksById.values()];
+  const running = tasks
+    .filter((task) => task.status === "running")
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const completed = tasks
+    .filter((task) => task.status !== "running")
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 8);
+
+  return { running, completed };
 }
 
 export function findLatestProposedPlan(

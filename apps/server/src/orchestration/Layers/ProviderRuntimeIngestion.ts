@@ -276,6 +276,19 @@ function orchestrationSessionStatusFromRuntimeState(
   }
 }
 
+function orchestrationSessionStatusFromRuntimeThreadState(
+  state: Extract<ProviderRuntimeEvent, { type: "thread.state.changed" }>["payload"]["state"],
+): "ready" | "error" | null {
+  switch (state) {
+    case "idle":
+      return "ready";
+    case "error":
+      return "error";
+    default:
+      return null;
+  }
+}
+
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
 ): "command" | "file-read" | "file-change" | undefined {
@@ -1310,6 +1323,10 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const threadStateSessionStatus =
+        event.type === "thread.state.changed"
+          ? orchestrationSessionStatusFromRuntimeThreadState(event.payload.state)
+          : null;
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1359,12 +1376,15 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        (event.type === "thread.state.changed" && threadStateSessionStatus !== null)
       ) {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
+            : event.type === "turn.completed" ||
+                event.type === "session.exited" ||
+                threadStateSessionStatus !== null
               ? null
               : activeTurnId;
         const status = (() => {
@@ -1379,6 +1399,8 @@ const make = Effect.gen(function* () {
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
                 : "ready";
+            case "thread.state.changed":
+              return threadStateSessionStatus ?? "ready";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
@@ -1389,12 +1411,14 @@ const make = Effect.gen(function* () {
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
-            : event.type === "turn.completed" &&
-                normalizeRuntimeTurnState(event.payload.state) === "failed"
-              ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-              : status === "ready"
-                ? null
-                : (thread.session?.lastError ?? null);
+            : event.type === "thread.state.changed" && event.payload.state === "error"
+              ? (thread.session?.lastError ?? "Provider thread error")
+              : event.type === "turn.completed" &&
+                  normalizeRuntimeTurnState(event.payload.state) === "failed"
+                ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
+                : status === "ready"
+                  ? null
+                  : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {

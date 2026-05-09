@@ -3955,13 +3955,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
   it("dispatches the next turn after a completed turn with stale running session status", async () => {
     const activeTurnId = "turn-stale-completed-send-next" as TurnId;
     const nextMessage = "send the next codex test message";
-    const sparkModelSelection = createModelSelection(
-      ProviderInstanceId.make("codex"),
-      "gpt-5.3-codex-spark",
-    );
+    const gpt55ModelSelection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {
-        [ProviderInstanceId.make("codex")]: sparkModelSelection,
+        [ProviderInstanceId.make("codex")]: gpt55ModelSelection,
       },
       stickyActiveProvider: ProviderInstanceId.make("codex"),
     });
@@ -3977,7 +3974,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         threads: snapshot.threads.map((thread) =>
           thread.id === THREAD_ID
             ? Object.assign({}, thread, {
-                modelSelection: sparkModelSelection,
+                modelSelection: gpt55ModelSelection,
                 latestTurn: {
                   turnId: activeTurnId,
                   state: "completed" as const,
@@ -4004,8 +4001,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
               ...nextFixture.serverConfig.providers[0]!,
               models: [
                 {
-                  slug: "gpt-5.3-codex-spark",
-                  name: "GPT-5.3 Codex Spark",
+                  slug: "gpt-5.5",
+                  name: "GPT-5.5",
                   isCustom: false,
                   capabilities: createModelCapabilities({
                     optionDescriptors: [],
@@ -4028,7 +4025,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      useComposerDraftStore.getState().setModelSelection(THREAD_REF, sparkModelSelection);
+      useComposerDraftStore.getState().setModelSelection(THREAD_REF, gpt55ModelSelection);
       await waitForLayout();
       useComposerDraftStore.getState().setPrompt(THREAD_REF, nextMessage);
       await waitForLayout();
@@ -4057,7 +4054,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             message: {
               text: nextMessage,
             },
-            modelSelection: sparkModelSelection,
+            modelSelection: gpt55ModelSelection,
           });
           expect(document.body.textContent).not.toContain("Queued follow-up");
         },

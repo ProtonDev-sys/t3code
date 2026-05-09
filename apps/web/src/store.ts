@@ -836,6 +836,23 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function latestTurnStateFromSessionStatus(
+  status: OrchestrationSessionStatus,
+): OrchestrationLatestTurn["state"] | null {
+  switch (status) {
+    case "idle":
+    case "ready":
+      return "completed";
+    case "error":
+      return "error";
+    case "interrupted":
+    case "stopped":
+      return "interrupted";
+    default:
+      return null;
+  }
+}
+
 function compareActivities(
   left: Thread["activities"][number],
   right: Thread["activities"][number],
@@ -876,6 +893,69 @@ function buildLatestTurn(params: {
     assistantMessageId: params.assistantMessageId,
     ...(resolvedPlan ? { sourceProposedPlan: resolvedPlan } : {}),
   };
+}
+
+function shouldAssistantMessageCompleteLatestTurn(
+  thread: Thread,
+  turnId: TurnId,
+  streaming: boolean,
+): boolean {
+  if (streaming) {
+    return false;
+  }
+  return !(
+    thread.session?.orchestrationStatus === "running" && thread.session.activeTurnId === turnId
+  );
+}
+
+function latestTurnFromSessionSet(
+  thread: Thread,
+  session: OrchestrationSession,
+): Thread["latestTurn"] {
+  if (session.status === "running" && session.activeTurnId !== null) {
+    return buildLatestTurn({
+      previous: thread.latestTurn,
+      turnId: session.activeTurnId,
+      state: "running",
+      requestedAt:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? thread.latestTurn.requestedAt
+          : session.updatedAt,
+      startedAt:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? (thread.latestTurn.startedAt ?? session.updatedAt)
+          : session.updatedAt,
+      completedAt: null,
+      assistantMessageId:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? thread.latestTurn.assistantMessageId
+          : null,
+      sourceProposedPlan: thread.pendingSourceProposedPlan,
+    });
+  }
+
+  const terminalState = latestTurnStateFromSessionStatus(session.status);
+  if (!terminalState || thread.latestTurn === null || thread.latestTurn.completedAt !== null) {
+    return thread.latestTurn;
+  }
+
+  const previousActiveTurnId = thread.session?.activeTurnId ?? null;
+  if (
+    thread.latestTurn.state !== "running" &&
+    (previousActiveTurnId === null || previousActiveTurnId !== thread.latestTurn.turnId)
+  ) {
+    return thread.latestTurn;
+  }
+
+  return buildLatestTurn({
+    previous: thread.latestTurn,
+    turnId: thread.latestTurn.turnId,
+    state: terminalState,
+    requestedAt: thread.latestTurn.requestedAt,
+    startedAt: thread.latestTurn.startedAt ?? session.updatedAt,
+    completedAt: session.updatedAt,
+    assistantMessageId: thread.latestTurn.assistantMessageId,
+  });
 }
 
 function rebindTurnDiffSummariesForAssistantMessage(
@@ -1410,32 +1490,43 @@ function applyEnvironmentOrchestrationEvent(
           event.payload.role === "assistant" &&
           event.payload.turnId !== null &&
           (thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId)
-            ? buildLatestTurn({
-                previous: thread.latestTurn,
-                turnId: event.payload.turnId,
-                state: event.payload.streaming
-                  ? "running"
-                  : thread.latestTurn?.state === "interrupted"
-                    ? "interrupted"
-                    : thread.latestTurn?.state === "error"
-                      ? "error"
-                      : "completed",
-                requestedAt:
-                  thread.latestTurn?.turnId === event.payload.turnId
-                    ? thread.latestTurn.requestedAt
-                    : event.payload.createdAt,
-                startedAt:
-                  thread.latestTurn?.turnId === event.payload.turnId
-                    ? (thread.latestTurn.startedAt ?? event.payload.createdAt)
-                    : event.payload.createdAt,
-                sourceProposedPlan: thread.pendingSourceProposedPlan,
-                completedAt: event.payload.streaming
-                  ? thread.latestTurn?.turnId === event.payload.turnId
-                    ? (thread.latestTurn.completedAt ?? null)
-                    : null
-                  : event.payload.updatedAt,
-                assistantMessageId: event.payload.messageId,
-              })
+            ? (() => {
+                const messageCompletesTurn = shouldAssistantMessageCompleteLatestTurn(
+                  thread,
+                  event.payload.turnId,
+                  event.payload.streaming,
+                );
+                return buildLatestTurn({
+                  previous: thread.latestTurn,
+                  turnId: event.payload.turnId,
+                  state: event.payload.streaming
+                    ? "running"
+                    : thread.latestTurn?.state === "interrupted"
+                      ? "interrupted"
+                      : thread.latestTurn?.state === "error"
+                        ? "error"
+                        : messageCompletesTurn
+                          ? "completed"
+                          : "running",
+                  requestedAt:
+                    thread.latestTurn?.turnId === event.payload.turnId
+                      ? thread.latestTurn.requestedAt
+                      : event.payload.createdAt,
+                  startedAt:
+                    thread.latestTurn?.turnId === event.payload.turnId
+                      ? (thread.latestTurn.startedAt ?? event.payload.createdAt)
+                      : event.payload.createdAt,
+                  sourceProposedPlan: thread.pendingSourceProposedPlan,
+                  completedAt: event.payload.streaming
+                    ? thread.latestTurn?.turnId === event.payload.turnId
+                      ? (thread.latestTurn.completedAt ?? null)
+                      : null
+                    : messageCompletesTurn
+                      ? event.payload.updatedAt
+                      : (thread.latestTurn?.completedAt ?? null),
+                  assistantMessageId: event.payload.messageId,
+                });
+              })()
             : thread.latestTurn;
         return {
           ...thread,
@@ -1451,28 +1542,7 @@ function applyEnvironmentOrchestrationEvent(
         ...thread,
         session: mapSession(event.payload.session),
         error: sanitizeThreadErrorMessage(event.payload.session.lastError),
-        latestTurn:
-          event.payload.session.status === "running" && event.payload.session.activeTurnId !== null
-            ? buildLatestTurn({
-                previous: thread.latestTurn,
-                turnId: event.payload.session.activeTurnId,
-                state: "running",
-                requestedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.requestedAt
-                    : event.payload.session.updatedAt,
-                startedAt:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? (thread.latestTurn.startedAt ?? event.payload.session.updatedAt)
-                    : event.payload.session.updatedAt,
-                completedAt: null,
-                assistantMessageId:
-                  thread.latestTurn?.turnId === event.payload.session.activeTurnId
-                    ? thread.latestTurn.assistantMessageId
-                    : null,
-                sourceProposedPlan: thread.pendingSourceProposedPlan,
-              })
-            : thread.latestTurn,
+        latestTurn: latestTurnFromSessionSet(thread, event.payload.session),
         updatedAt: event.occurredAt,
       }));
 

@@ -715,7 +715,8 @@ function normalizeProviderModelOptions(
     }
     const fastMode =
       legacy.codexFastMode === true ||
-      (typeof legacy.serviceTier === "string" && legacy.serviceTier === "fast");
+      (typeof legacy.serviceTier === "string" &&
+        (legacy.serviceTier === "fast" || legacy.serviceTier === "priority"));
     if (fastMode) {
       codexExtras.push({ id: "fastMode", value: true });
     }

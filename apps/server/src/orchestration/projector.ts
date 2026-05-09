@@ -1,6 +1,8 @@
 import type {
   OrchestrationEvent,
+  OrchestrationLatestTurn,
   OrchestrationReadModel,
+  OrchestrationSessionStatus,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -43,6 +45,23 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function latestTurnStateFromSessionStatus(
+  status: OrchestrationSessionStatus,
+): OrchestrationLatestTurn["state"] | null {
+  switch (status) {
+    case "idle":
+    case "ready":
+      return "completed";
+    case "error":
+      return "error";
+    case "interrupted":
+    case "stopped":
+      return "interrupted";
+    default:
+      return null;
+  }
+}
+
 function isSessionReopeningTerminalTurn(
   session: OrchestrationSession,
   latestTurn: OrchestrationThread["latestTurn"],
@@ -70,6 +89,62 @@ function shouldApplyTurnUpdate(thread: OrchestrationThread, turnId: TurnId): boo
     thread.latestTurn.turnId === turnId ||
     thread.session?.activeTurnId === turnId
   );
+}
+
+function shouldAssistantMessageCompleteLatestTurn(
+  thread: OrchestrationThread,
+  turnId: TurnId,
+  streaming: boolean,
+): boolean {
+  if (streaming) {
+    return false;
+  }
+  return !(thread.session?.status === "running" && thread.session.activeTurnId === turnId);
+}
+
+function latestTurnFromSessionSet(
+  thread: OrchestrationThread,
+  session: OrchestrationSession,
+): OrchestrationThread["latestTurn"] {
+  if (session.status === "running" && session.activeTurnId !== null) {
+    return {
+      turnId: session.activeTurnId,
+      state: "running",
+      requestedAt:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? thread.latestTurn.requestedAt
+          : session.updatedAt,
+      startedAt:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? (thread.latestTurn.startedAt ?? session.updatedAt)
+          : session.updatedAt,
+      completedAt: null,
+      assistantMessageId:
+        thread.latestTurn?.turnId === session.activeTurnId
+          ? thread.latestTurn.assistantMessageId
+          : null,
+    };
+  }
+
+  const terminalState = latestTurnStateFromSessionStatus(session.status);
+  if (!terminalState || thread.latestTurn === null || thread.latestTurn.completedAt !== null) {
+    return thread.latestTurn;
+  }
+
+  const previousActiveTurnId = thread.session?.activeTurnId ?? null;
+  if (
+    thread.latestTurn.state !== "running" &&
+    (previousActiveTurnId === null || previousActiveTurnId !== thread.latestTurn.turnId)
+  ) {
+    return thread.latestTurn;
+  }
+
+  return {
+    ...thread.latestTurn,
+    state: terminalState,
+    startedAt: thread.latestTurn.startedAt ?? session.updatedAt,
+    completedAt: session.updatedAt,
+  };
 }
 
 function decodeForEvent<A>(
@@ -450,18 +525,27 @@ export function projectEvent(
             : null;
         const nextLatestTurn: OrchestrationThread["latestTurn"] =
           shouldUpdateLatestTurn && payload.turnId !== null
-            ? {
-                turnId: payload.turnId,
-                state: payload.streaming
-                  ? (existingTerminalState ?? "running")
-                  : (existingTerminalState ?? "completed"),
-                requestedAt: existingLatestTurn?.requestedAt ?? payload.createdAt,
-                startedAt: existingLatestTurn?.startedAt ?? payload.createdAt,
-                completedAt: payload.streaming
-                  ? (existingLatestTurn?.completedAt ?? null)
-                  : (existingLatestTurn?.completedAt ?? payload.updatedAt),
-                assistantMessageId: payload.messageId,
-              }
+            ? (() => {
+                const messageCompletesTurn = shouldAssistantMessageCompleteLatestTurn(
+                  thread,
+                  payload.turnId,
+                  payload.streaming,
+                );
+                return {
+                  turnId: payload.turnId,
+                  state: payload.streaming
+                    ? (existingTerminalState ?? "running")
+                    : (existingTerminalState ?? (messageCompletesTurn ? "completed" : "running")),
+                  requestedAt: existingLatestTurn?.requestedAt ?? payload.createdAt,
+                  startedAt: existingLatestTurn?.startedAt ?? payload.createdAt,
+                  completedAt: payload.streaming
+                    ? (existingLatestTurn?.completedAt ?? null)
+                    : messageCompletesTurn
+                      ? (existingLatestTurn?.completedAt ?? payload.updatedAt)
+                      : (existingLatestTurn?.completedAt ?? null),
+                  assistantMessageId: payload.messageId,
+                };
+              })()
             : thread.latestTurn;
 
         return {
@@ -571,26 +655,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session: projectedSession,
-            latestTurn:
-              projectedSession.status === "running" && projectedSession.activeTurnId !== null
-                ? {
-                    turnId: projectedSession.activeTurnId,
-                    state: "running",
-                    requestedAt:
-                      thread.latestTurn?.turnId === projectedSession.activeTurnId
-                        ? thread.latestTurn.requestedAt
-                        : projectedSession.updatedAt,
-                    startedAt:
-                      thread.latestTurn?.turnId === projectedSession.activeTurnId
-                        ? (thread.latestTurn.startedAt ?? projectedSession.updatedAt)
-                        : projectedSession.updatedAt,
-                    completedAt: null,
-                    assistantMessageId:
-                      thread.latestTurn?.turnId === projectedSession.activeTurnId
-                        ? thread.latestTurn.assistantMessageId
-                        : null,
-                  }
-                : thread.latestTurn,
+            latestTurn: latestTurnFromSessionSet(thread, projectedSession),
             updatedAt: event.occurredAt,
           }),
         };

@@ -68,6 +68,7 @@ import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerRuntimeModeDropdown } from "./ComposerRuntimeModeDropdown";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { ComposerGoalFollowUpBanner } from "./ComposerGoalFollowUpBanner";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
@@ -92,7 +93,12 @@ import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelS
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
-import type { PendingApproval, PendingUserInput } from "../../session-logic";
+import type {
+  ActiveGoalState,
+  ActiveTasksState,
+  PendingApproval,
+  PendingUserInput,
+} from "../../session-logic";
 import type { ContextWindowSnapshot } from "../../lib/contextWindow";
 import {
   deriveProviderUsageSnapshots,
@@ -237,6 +243,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   } | null;
   isRunning: boolean;
   showPlanFollowUpPrompt: boolean;
+  showGoalFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
   isConnecting: boolean;
@@ -260,6 +267,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         pendingAction={props.pendingAction}
         isRunning={props.isRunning}
         showPlanFollowUpPrompt={props.showPlanFollowUpPrompt}
+        showGoalFollowUpPrompt={props.showGoalFollowUpPrompt}
         promptHasText={props.promptHasText}
         isSendBusy={props.isSendBusy}
         isConnecting={props.isConnecting}
@@ -411,7 +419,10 @@ export interface ChatComposerProps {
   // Plan
   showPlanFollowUpPrompt: boolean;
   activeProposedPlan: Thread["proposedPlans"][number] | null;
+  showGoalFollowUpPrompt: boolean;
+  activeGoal: ActiveGoalState | null;
   activePlan: { turnId?: TurnId } | null;
+  activeTasks: ActiveTasksState;
   sidebarProposedPlan: { turnId?: TurnId } | null;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
@@ -516,7 +527,10 @@ export const ChatComposer = memo(
       respondingRequestIds,
       showPlanFollowUpPrompt,
       activeProposedPlan,
+      showGoalFollowUpPrompt,
+      activeGoal,
       activePlan,
+      activeTasks,
       sidebarProposedPlan,
       planSidebarLabel,
       planSidebarOpen,
@@ -1011,12 +1025,17 @@ export const ChatComposer = memo(
     const hasComposerHeader =
       isComposerApprovalState ||
       pendingUserInputs.length > 0 ||
-      (showPlanFollowUpPrompt && activeProposedPlan !== null);
+      (showPlanFollowUpPrompt && activeProposedPlan !== null) ||
+      (showGoalFollowUpPrompt && activeGoal !== null);
     const showCollapsedMobilePromptRow =
       isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
 
-    const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
+    const composerFooterHasWideActions =
+      showPlanFollowUpPrompt || showGoalFollowUpPrompt || activePendingProgress !== null;
     const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
+    const hasTaskSidebarContent =
+      activeTasks.running.length > 0 || activeTasks.completed.length > 0;
+    const showSidebarToggle = showPlanSidebarToggle || hasTaskSidebarContent;
     const composerFooterActionLayoutKey = useMemo(() => {
       if (activePendingProgress) {
         return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
@@ -1026,6 +1045,9 @@ export const ChatComposer = memo(
       }
       if (showPlanFollowUpPrompt) {
         return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
+      }
+      if (showGoalFollowUpPrompt) {
+        return prompt.trim().length > 0 ? "goal:send" : "goal:continue";
       }
       return `idle:${hasComposerSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
     }, [
@@ -1037,6 +1059,7 @@ export const ChatComposer = memo(
       isSendBusy,
       phase,
       prompt,
+      showGoalFollowUpPrompt,
       showPlanFollowUpPrompt,
     ]);
 
@@ -1082,7 +1105,7 @@ export const ChatComposer = memo(
           modelOptions: activeComposerModelOptions,
           prompt,
           includePrimarySelect: false,
-        }),
+        }).filter((item) => item.id !== "agent"),
       [activeComposerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
     );
     const showFastModeToggle = useMemo(
@@ -1110,9 +1133,13 @@ export const ChatComposer = memo(
       [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
     );
     const collapsedComposerPrimaryActionDisabled =
-      isSendBusy || isConnecting || !hasComposerSendableContent;
+      isSendBusy || isConnecting || !(hasComposerSendableContent || showGoalFollowUpPrompt);
     const collapsedComposerPrimaryActionLabel =
-      phase === "running" ? "Queue follow-up" : "Send message";
+      phase === "running"
+        ? "Queue follow-up"
+        : showGoalFollowUpPrompt
+          ? "Continue goal"
+          : "Send message";
     const showMobilePendingAnswerActions =
       isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -1655,7 +1682,7 @@ export const ChatComposer = memo(
       if (activePendingProgress) {
         return activePendingProgress.isLastQuestion && Boolean(activePendingResolvedAnswers);
       }
-      return showPlanFollowUpPrompt || hasComposerSendableContent;
+      return showPlanFollowUpPrompt || showGoalFollowUpPrompt || hasComposerSendableContent;
     }, [
       activePendingProgress,
       activePendingResolvedAnswers,
@@ -1664,6 +1691,7 @@ export const ChatComposer = memo(
       isMobileViewport,
       isSendBusy,
       phase,
+      showGoalFollowUpPrompt,
       showPlanFollowUpPrompt,
     ]);
 
@@ -2131,6 +2159,15 @@ export const ChatComposer = memo(
                     planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
                   />
                 </div>
+              ) : showGoalFollowUpPrompt && activeGoal ? (
+                <div
+                  className={cn(
+                    "border-b border-border/65 bg-muted/20",
+                    queuedFollowUps.length === 0 ? "rounded-t-[19px]" : null,
+                  )}
+                >
+                  <ComposerGoalFollowUpBanner objective={activeGoal.objective} />
+                </div>
               ) : null)}
 
             {isComposerCollapsedMobile && activePendingApproval ? (
@@ -2192,6 +2229,7 @@ export const ChatComposer = memo(
                         pendingAction={pendingPrimaryAction}
                         isRunning={false}
                         showPlanFollowUpPrompt={false}
+                        showGoalFollowUpPrompt={false}
                         promptHasText={false}
                         isSendBusy={isSendBusy}
                         isConnecting={isConnecting}
@@ -2230,7 +2268,9 @@ export const ChatComposer = memo(
                       ? `/${selectedProviderSlashCommand.command.name}${
                           prompt.trim() ? ` ${prompt.trim()}` : ""
                         }`
-                      : prompt.trim() || "Ask anything..."}
+                      : showGoalFollowUpPrompt
+                        ? prompt.trim() || "Continue active goal"
+                        : prompt.trim() || "Ask anything..."}
                 </button>
                 <button
                   type="button"
@@ -2410,15 +2450,17 @@ export const ChatComposer = memo(
                         ? "Type your own answer, or leave this blank to use the selected option"
                         : showPlanFollowUpPrompt && activeProposedPlan
                           ? "Add feedback to refine the plan, or leave this blank to implement it"
-                          : environmentUnavailable
-                            ? `${environmentUnavailable.label} is ${
-                                environmentUnavailable.connectionState === "connecting"
-                                  ? "connecting"
-                                  : "disconnected"
-                              }`
-                            : phase === "disconnected"
-                              ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @ files, / commands"
+                          : showGoalFollowUpPrompt && activeGoal
+                            ? "Add direction, or leave blank to continue the goal"
+                            : environmentUnavailable
+                              ? `${environmentUnavailable.label} is ${
+                                  environmentUnavailable.connectionState === "connecting"
+                                    ? "connecting"
+                                    : "disconnected"
+                                }`
+                              : phase === "disconnected"
+                                ? "Ask for follow-up changes or attach images"
+                                : "Ask anything, @ files, / commands"
                   }
                   disabled={
                     isConnecting ||
@@ -2436,6 +2478,7 @@ export const ChatComposer = memo(
                       pendingAction={pendingPrimaryAction}
                       isRunning={false}
                       showPlanFollowUpPrompt={false}
+                      showGoalFollowUpPrompt={false}
                       promptHasText={false}
                       isSendBusy={isSendBusy}
                       isConnecting={isConnecting}
@@ -2472,7 +2515,7 @@ export const ChatComposer = memo(
               >
                 <div className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   <CompactComposerControlsMenu
-                    activePlan={showPlanSidebarToggle}
+                    activePlan={showSidebarToggle}
                     canAddImage={Boolean(activeThreadId) && !isComposerApprovalState}
                     fastModeControl={
                       showFastModeToggle ? (
@@ -2551,7 +2594,7 @@ export const ChatComposer = memo(
                     traitItems={composerTraitStatusItems}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     interactionMode={interactionMode}
-                    showPlanToggle={showPlanSidebarToggle}
+                    showPlanToggle={showSidebarToggle}
                     planSidebarLabel={planSidebarLabel}
                     planSidebarOpen={planSidebarOpen}
                     onTogglePlanSidebar={togglePlanSidebar}
@@ -2579,12 +2622,15 @@ export const ChatComposer = memo(
                     showPlanFollowUpPrompt={
                       pendingUserInputs.length === 0 && showPlanFollowUpPrompt
                     }
+                    showGoalFollowUpPrompt={
+                      pendingUserInputs.length === 0 && showGoalFollowUpPrompt
+                    }
                     promptHasText={prompt.trim().length > 0}
                     isSendBusy={isSendBusy}
                     isConnecting={isConnecting}
                     isEnvironmentUnavailable={environmentUnavailable !== null}
                     isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={hasComposerSendableContent}
+                    hasSendableContent={hasComposerSendableContent || showGoalFollowUpPrompt}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}

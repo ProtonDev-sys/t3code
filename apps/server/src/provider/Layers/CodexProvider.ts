@@ -103,7 +103,6 @@ function mapCodexModelCapabilities(
         },
   );
   const defaultReasoning = reasoningOptions.find((option) => option.isDefault)?.id;
-  const supportsFastMode = (model.additionalSpeedTiers ?? []).includes("fast");
   return createModelCapabilities({
     optionDescriptors: [
       ...(reasoningOptions.length > 0
@@ -117,15 +116,11 @@ function mapCodexModelCapabilities(
             },
           ]
         : []),
-      ...(supportsFastMode
-        ? [
-            {
-              id: "fastMode",
-              label: "Fast Mode",
-              type: "boolean" as const,
-            },
-          ]
-        : []),
+      {
+        id: "fastMode",
+        label: "Fast Mode",
+        type: "boolean" as const,
+      },
     ],
   });
 }
@@ -144,7 +139,7 @@ const DEFAULT_CODEX_REASONING_EFFORTS = [
   "xhigh",
 ] satisfies ReadonlyArray<CodexSchema.V2ModelListResponse__ReasoningEffort>;
 
-function createCodexFallbackCapabilities(supportsFastMode: boolean): ModelCapabilities {
+function createCodexFallbackCapabilities(): ModelCapabilities {
   return createModelCapabilities({
     optionDescriptors: [
       {
@@ -164,15 +159,11 @@ function createCodexFallbackCapabilities(supportsFastMode: boolean): ModelCapabi
               },
         ),
       },
-      ...(supportsFastMode
-        ? [
-            {
-              id: "fastMode",
-              label: "Fast Mode",
-              type: "boolean" as const,
-            },
-          ]
-        : []),
+      {
+        id: "fastMode",
+        label: "Fast Mode",
+        type: "boolean" as const,
+      },
     ],
   });
 }
@@ -182,37 +173,37 @@ const CODEX_FALLBACK_MODELS = [
     slug: "gpt-5.5",
     name: "GPT-5.5",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(true),
+    capabilities: createCodexFallbackCapabilities(),
   },
   {
     slug: "gpt-5.4",
     name: "GPT-5.4",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(true),
+    capabilities: createCodexFallbackCapabilities(),
   },
   {
     slug: "gpt-5.4-mini",
     name: "GPT-5.4-Mini",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(false),
+    capabilities: createCodexFallbackCapabilities(),
   },
   {
     slug: "gpt-5.3-codex",
     name: "GPT-5.3-Codex",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(false),
+    capabilities: createCodexFallbackCapabilities(),
   },
   {
     slug: "gpt-5.3-codex-spark",
     name: "GPT-5.3-Codex-Spark",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(false),
+    capabilities: createCodexFallbackCapabilities(),
   },
   {
     slug: "gpt-5.2",
     name: "GPT-5.2",
     isCustom: false,
-    capabilities: createCodexFallbackCapabilities(false),
+    capabilities: createCodexFallbackCapabilities(),
   },
 ] satisfies ReadonlyArray<ServerProviderModel>;
 

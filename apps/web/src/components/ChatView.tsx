@@ -56,7 +56,9 @@ import {
   derivePhase,
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
+  deriveActiveGoalState,
   deriveActivePlanState,
+  deriveActiveTasksState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -418,6 +420,7 @@ function deriveRunningFollowUpDescription(params: {
     const description =
       (typeof payload?.summary === "string" ? payload.summary : null) ??
       (typeof payload?.description === "string" ? payload.description : null) ??
+      (typeof payload?.detail === "string" ? payload.detail : null) ??
       activity.summary;
     const taskType = typeof payload?.taskType === "string" ? payload.taskType : null;
     activeTasks.set(taskId, {
@@ -469,6 +472,8 @@ function readProviderBooleanOption(
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+const GOAL_CONTINUE_PROMPT =
+  "Continue working toward the active goal. If it is already fully complete, say so clearly; otherwise keep doing the remaining work and end with what remains.";
 
 type ChatViewProps =
   | {
@@ -1539,12 +1544,29 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  const activeTasks = useMemo(() => deriveActiveTasksState(threadActivities), [threadActivities]);
+  const activeTasksSidebarKey = useMemo(() => {
+    const runningTaskIds = activeTasks.running.map((task) => task.taskId).join(",");
+    if (runningTaskIds.length > 0) {
+      return `tasks:${runningTaskIds}`;
+    }
+    const latestCompletedTaskId = activeTasks.completed[0]?.taskId;
+    return latestCompletedTaskId ? `tasks:${latestCompletedTaskId}` : null;
+  }, [activeTasks]);
+  const activePanelDismissalKey =
+    activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? activeTasksSidebarKey ?? "__dismissed__";
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
+  const activeGoal = useMemo(() => deriveActiveGoalState(threadActivities), [threadActivities]);
+  const showGoalFollowUpPrompt =
+    pendingUserInputs.length === 0 &&
+    !showPlanFollowUpPrompt &&
+    latestTurnSettled &&
+    activeGoal?.status === "active";
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {
     beginLocalDispatch,
@@ -2356,19 +2378,17 @@ export default function ChatView(props: ChatViewProps) {
   const togglePlanSidebar = useCallback(() => {
     setPlanSidebarOpen((open) => {
       if (open) {
-        planSidebarDismissedForTurnRef.current =
-          activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+        planSidebarDismissedForTurnRef.current = activePanelDismissalKey;
       } else {
         planSidebarDismissedForTurnRef.current = null;
       }
       return !open;
     });
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+  }, [activePanelDismissalKey]);
   const closePlanSidebar = useCallback(() => {
     setPlanSidebarOpen(false);
-    planSidebarDismissedForTurnRef.current =
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+    planSidebarDismissedForTurnRef.current = activePanelDismissalKey;
+  }, [activePanelDismissalKey]);
 
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -2479,6 +2499,15 @@ export default function ChatView(props: ChatViewProps) {
     planSidebarOpen,
     sidebarProposedPlan?.turnId,
   ]);
+
+  useEffect(() => {
+    if (!autoOpenPlanSidebar) return;
+    if (activeTasks.running.length === 0) return;
+    if (planSidebarOpen) return;
+    if (!activeTasksSidebarKey) return;
+    if (planSidebarDismissedForTurnRef.current === activeTasksSidebarKey) return;
+    setPlanSidebarOpen(true);
+  }, [activeTasks.running.length, activeTasksSidebarKey, autoOpenPlanSidebar, planSidebarOpen]);
 
   useEffect(() => {
     setIsRevertingCheckpoint(false);
@@ -2884,7 +2913,14 @@ export default function ChatView(props: ChatViewProps) {
       terminalContexts: composerTerminalContexts,
     });
     const hasProviderSlashCommand = selectedProviderSlashCommand !== null;
-    const hasSendableContentForDispatch = hasSendableContent || hasProviderSlashCommand;
+    const shouldSendGoalContinuation =
+      !isSendingQueuedSnapshot &&
+      showGoalFollowUpPrompt &&
+      activeGoal?.status === "active" &&
+      !hasProviderSlashCommand &&
+      trimmed.length === 0;
+    const hasSendableContentForDispatch =
+      hasSendableContent || hasProviderSlashCommand || shouldSendGoalContinuation;
     if (!isSendingQueuedSnapshot && showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
@@ -3050,8 +3086,9 @@ export default function ChatView(props: ChatViewProps) {
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const promptTextForDispatch = shouldSendGoalContinuation ? GOAL_CONTINUE_PROMPT : promptForSend;
     const baseMessageTextForSend = appendTerminalContextsToPrompt(
-      promptForSend,
+      promptTextForDispatch,
       composerTerminalContextsSnapshot,
     );
     const messageTextForSend = selectedProviderSlashCommand
@@ -3133,7 +3170,7 @@ export default function ChatView(props: ChatViewProps) {
           firstComposerImageName = firstComposerImage.name;
         }
       }
-      let titleSeed = trimmed;
+      let titleSeed = trimmed || (shouldSendGoalContinuation ? "Continue active goal" : "");
       if (!titleSeed) {
         if (firstComposerImageName) {
           titleSeed = `Image: ${firstComposerImageName}`;
@@ -4173,7 +4210,10 @@ export default function ChatView(props: ChatViewProps) {
                   respondingRequestIds={respondingRequestIds}
                   showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                   activeProposedPlan={activeProposedPlan}
+                  showGoalFollowUpPrompt={showGoalFollowUpPrompt}
+                  activeGoal={activeGoal}
                   activePlan={activePlan as { turnId?: TurnId } | null}
+                  activeTasks={activeTasks}
                   sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
                   planSidebarLabel={planSidebarLabel}
                   planSidebarOpen={planSidebarOpen}
@@ -4271,6 +4311,7 @@ export default function ChatView(props: ChatViewProps) {
               <PlanSidebar
                 activePlan={activePlan}
                 activeProposedPlan={sidebarProposedPlan}
+                activeTasks={activeTasks}
                 label={planSidebarLabel}
                 environmentId={environmentId}
                 markdownCwd={gitCwd ?? undefined}
@@ -4307,6 +4348,7 @@ export default function ChatView(props: ChatViewProps) {
           <PlanSidebar
             activePlan={activePlan}
             activeProposedPlan={sidebarProposedPlan}
+            activeTasks={activeTasks}
             label={planSidebarLabel}
             environmentId={environmentId}
             markdownCwd={gitCwd ?? undefined}

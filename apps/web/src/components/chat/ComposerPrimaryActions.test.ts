@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  formatGoalPrimaryActionLabel,
+  formatPendingPrimaryActionLabel,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -89,5 +92,19 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("formatGoalPrimaryActionLabel", () => {
+  it("continues an active goal when the prompt is empty", () => {
+    expect(formatGoalPrimaryActionLabel({ isBusy: false, promptHasText: false })).toBe("Continue");
+  });
+
+  it("sends typed goal steering text when the prompt has text", () => {
+    expect(formatGoalPrimaryActionLabel({ isBusy: false, promptHasText: true })).toBe("Send");
+  });
+
+  it("uses the busy label while dispatching", () => {
+    expect(formatGoalPrimaryActionLabel({ isBusy: true, promptHasText: false })).toBe("Sending...");
   });
 });

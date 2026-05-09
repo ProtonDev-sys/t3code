@@ -371,6 +371,33 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+
+  it.effect("normalizes legacy priority service tier before starting a session", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-priority"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
+          { id: "serviceTier", value: "priority" },
+        ]),
+        runtimeMode: "full-access",
+      });
+
+      assert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
+        binaryPath: "codex",
+        cwd: process.cwd(),
+        mcpEnabled: true,
+        model: "gpt-5.3-codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        serviceTier: "fast",
+        threadId: asThreadId("thread-priority"),
+        runtimeMode: "full-access",
+      });
+    }),
+  );
 });
 
 const sessionRuntimeFactory = makeRuntimeFactory();
@@ -438,6 +465,37 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         input: "hello",
         model: "gpt-5.3-codex",
         effort: "high",
+        serviceTier: "fast",
+      });
+    }),
+  );
+
+  it.effect("normalizes legacy priority service tier before sending a turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-priority"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId: asThreadId("sess-priority"),
+          input: "hello",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
+            { id: "serviceTier", value: "priority" },
+          ]),
+          attachments: [],
+        }),
+      );
+
+      assert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        input: "hello",
+        model: "gpt-5.3-codex",
         serviceTier: "fast",
       });
     }),
@@ -864,6 +922,40 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }
       assert.equal(firstEvent.value.turnId, "turn-cancelled");
       assert.equal(firstEvent.value.payload.state, "cancelled");
+    }),
+  );
+
+  it.effect("maps Codex idle thread status to canonical thread state", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-thread-idle"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "thread/status/changed",
+        threadId: asThreadId("thread-1"),
+        payload: {
+          threadId: "thread-1",
+          status: {
+            type: "idle",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.state.changed");
+      if (firstEvent.value.type !== "thread.state.changed") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.state, "idle");
     }),
   );
 

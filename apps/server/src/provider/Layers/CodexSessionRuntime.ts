@@ -141,6 +141,26 @@ export interface CodexThreadSnapshot {
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
 }
 
+const CODEX_GOAL_PROTOCOL = [
+  "Keep this goal active across turns until it is actually complete.",
+  "Do not present the goal as complete unless all requested work is done.",
+  "When you stop, state whether the goal is complete. If it is incomplete, list the remaining work clearly.",
+].join("\n");
+
+function normalizeCodexServiceTier(
+  value: unknown,
+): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+  switch (value) {
+    case "fast":
+    case "priority":
+      return "fast";
+    case "flex":
+      return "flex";
+    default:
+      return undefined;
+  }
+}
+
 export function applyCodexGoalToPrompt(
   prompt: string | undefined,
   goal: CodexSessionRuntimeGoalState | null,
@@ -149,7 +169,7 @@ export function applyCodexGoalToPrompt(
   if (!objective || goal?.status !== "active") {
     return prompt;
   }
-  const goalContext = `Current long-running goal:\n${objective}`;
+  const goalContext = `Current long-running goal:\n${objective}\n\nGoal protocol:\n${CODEX_GOAL_PROTOCOL}`;
   const trimmedPrompt = prompt?.trim();
   if (!trimmedPrompt) {
     return goalContext;
@@ -162,7 +182,7 @@ export function buildCodexGoalStartPrompt(goal: CodexSessionRuntimeGoalState): s
   const goalContext =
     applyCodexGoalToPrompt(undefined, { ...goal, objective, status: "active" }) ??
     `Current long-running goal:\n${objective}`;
-  return `${goalContext}\n\nUser request:\nStart working toward this goal now.`;
+  return `${goalContext}\n\nUser request:\nStart working toward this goal now. Continue through the available work before ending the turn.`;
 }
 
 export interface CodexSessionRuntimeShape {
@@ -342,6 +362,7 @@ function buildThreadStartParams(input: {
   readonly mcpEnabled: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
+  const serviceTier = normalizeCodexServiceTier(input.serviceTier);
   const threadConfig = {
     ...(input.mcpEnabled ? {} : { mcp_servers: {} }),
     ...(input.modelContextWindow ? { model_context_window: input.modelContextWindow } : {}),
@@ -352,7 +373,7 @@ function buildThreadStartParams(input: {
     sandbox: config.sandbox,
     ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
   };
 }
 
@@ -426,6 +447,7 @@ export function buildTurnStartParams(input: {
   }
 
   const config = runtimeModeToThreadConfig(input.runtimeMode);
+  const serviceTier = normalizeCodexServiceTier(input.serviceTier);
   const collaborationMode = buildCodexCollaborationMode({
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
@@ -438,7 +460,7 @@ export function buildTurnStartParams(input: {
     approvalPolicy: config.approvalPolicy,
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...(collaborationMode ? { collaborationMode } : {}),
   }).pipe(
@@ -710,6 +732,25 @@ function shouldSuppressChildConversationNotification(
   );
 }
 
+function sessionUpdateFromThreadStatus(
+  status: EffectCodexSchema.V2ThreadStatusChangedNotification["status"],
+): Partial<ProviderSession> | null {
+  switch (status.type) {
+    case "idle":
+      return {
+        status: "ready",
+        activeTurnId: undefined,
+      };
+    case "systemError":
+      return {
+        status: "error",
+        activeTurnId: undefined,
+      };
+    default:
+      return null;
+  }
+}
+
 function toCodexUserInputAnswer(
   questionId: string,
   value: ProviderUserInputAnswers[string],
@@ -892,6 +933,13 @@ export const makeCodexSessionRuntime = (
         },
       });
     });
+    // Do not await a client request from inside the protocol input handler: the
+    // same reader must process the response, so awaiting here deadlocks future turns.
+    const refreshAccountRateLimitsSnapshot = emitAccountRateLimitsSnapshot.pipe(
+      Effect.ignoreCause({ log: true }),
+      Effect.forkIn(runtimeScope),
+      Effect.asVoid,
+    );
 
     const emitSyntheticCommandTurn = (providerThreadId: string, turnId: TurnId) =>
       Effect.gen(function* () {
@@ -1053,6 +1101,22 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
+    yield* client.handleServerNotification("thread/status/changed", (payload) =>
+      forwardServerNotification("thread/status/changed", payload).pipe(
+        Effect.andThen(
+          currentSessionProviderThreadId.pipe(
+            Effect.flatMap((providerThreadId) => {
+              if (providerThreadId && payload.threadId !== providerThreadId) {
+                return Effect.void;
+              }
+              const update = sessionUpdateFromThreadStatus(payload.status);
+              return update ? updateSession(sessionRef, update) : Effect.void;
+            }),
+          ),
+        ),
+      ),
+    );
+
     yield* client.handleServerNotification("turn/started", (payload) =>
       forwardServerNotification("turn/started", payload).pipe(
         Effect.andThen(
@@ -1087,11 +1151,7 @@ export const makeCodexSessionRuntime = (
                 status: payload.turn.status === "failed" ? "error" : "ready",
                 activeTurnId: undefined,
                 ...(lastError ? { lastError } : {}),
-              }).pipe(
-                Effect.andThen(
-                  emitAccountRateLimitsSnapshot.pipe(Effect.ignoreCause({ log: true })),
-                ),
-              );
+              }).pipe(Effect.andThen(refreshAccountRateLimitsSnapshot));
             }),
           ),
         ),
@@ -1293,6 +1353,7 @@ export const makeCodexSessionRuntime = (
       );
     const handledServerNotificationMethods = new Set<CodexRpc.ServerNotificationMethod>([
       "thread/started",
+      "thread/status/changed",
       "turn/started",
       "turn/completed",
       "error",

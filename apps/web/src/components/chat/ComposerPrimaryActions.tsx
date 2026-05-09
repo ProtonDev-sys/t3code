@@ -17,6 +17,7 @@ interface ComposerPrimaryActionsProps {
   pendingAction: PendingActionState | null;
   isRunning: boolean;
   showPlanFollowUpPrompt: boolean;
+  showGoalFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
   isConnecting: boolean;
@@ -47,6 +48,16 @@ export const formatPendingPrimaryActionLabel = (input: {
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
 
+export const formatGoalPrimaryActionLabel = (input: {
+  isBusy: boolean;
+  promptHasText: boolean;
+}) => {
+  if (input.isBusy) {
+    return "Sending...";
+  }
+  return input.promptHasText ? "Send" : "Continue";
+};
+
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
@@ -56,6 +67,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   pendingAction,
   isRunning,
   showPlanFollowUpPrompt,
+  showGoalFollowUpPrompt,
   promptHasText,
   isSendBusy,
   isConnecting,
@@ -200,6 +212,23 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           </MenuPopup>
         </Menu>
       </div>
+    );
+  }
+
+  if (showGoalFollowUpPrompt) {
+    return (
+      <Button
+        type="submit"
+        size="sm"
+        className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
+        {...pointerFocusProps}
+        disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+      >
+        {formatGoalPrimaryActionLabel({
+          isBusy: isConnecting || isSendBusy,
+          promptHasText,
+        })}
+      </Button>
     );
   }
 

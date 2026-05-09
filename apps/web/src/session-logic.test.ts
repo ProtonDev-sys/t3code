@@ -10,7 +10,9 @@ import { describe, expect, it } from "vitest";
 import {
   deriveCompletionDividerBeforeEntryId,
   deriveActiveWorkStartedAt,
+  deriveActiveGoalState,
   deriveActivePlanState,
+  deriveActiveTasksState,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
@@ -568,6 +570,171 @@ describe("findSidebarProposedPlan", () => {
         threadId: ThreadId.make("thread-1"),
       })?.planMarkdown,
     ).toBe("# Latest");
+  });
+});
+
+describe("deriveActiveGoalState", () => {
+  it("tracks active Codex goals from goal task progress", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "goal-set",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "codex-goal",
+          detail: "Thread goal set: Fix readiness after subagents finish",
+        },
+      }),
+    ];
+
+    expect(deriveActiveGoalState(activities)).toEqual({
+      status: "active",
+      objective: "Fix readiness after subagents finish",
+      updatedAt: "2026-02-23T00:00:01.000Z",
+    });
+  });
+
+  it("preserves the objective across pause and resume updates", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "goal-set",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        payload: {
+          taskId: "codex-goal",
+          detail: "Thread goal set: Stabilize goal continuation",
+        },
+      }),
+      makeActivity({
+        id: "goal-pause",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        payload: { taskId: "codex-goal", detail: "Thread goal paused." },
+      }),
+      makeActivity({
+        id: "goal-resume",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.progress",
+        payload: { taskId: "codex-goal", detail: "Thread goal resumed." },
+      }),
+    ];
+
+    expect(deriveActiveGoalState(activities)).toEqual({
+      status: "active",
+      objective: "Stabilize goal continuation",
+      updatedAt: "2026-02-23T00:00:03.000Z",
+    });
+  });
+
+  it("clears the active goal after a clear command", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "goal-set",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        payload: { taskId: "codex-goal", detail: "Thread goal set: Continue safely" },
+      }),
+      makeActivity({
+        id: "goal-clear",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        payload: { taskId: "codex-goal", detail: "Thread goal cleared." },
+      }),
+    ];
+
+    expect(deriveActiveGoalState(activities)).toBeNull();
+  });
+});
+
+describe("deriveActiveTasksState", () => {
+  it("tracks running subagent task progress by task id", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "task-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Subagent task started",
+        payload: {
+          taskId: "task-subagent-1",
+          taskType: "subagent",
+          detail: "Reviewing the server adapter",
+        },
+      }),
+      makeActivity({
+        id: "task-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "task-subagent-1",
+          summary: "Reading Codex adapter tests",
+          detail: "Inspecting model option handling",
+        },
+      }),
+    ];
+
+    expect(deriveActiveTasksState(activities)).toEqual({
+      running: [
+        {
+          taskId: "task-subagent-1",
+          taskType: "subagent",
+          summary: "Reading Codex adapter tests",
+          detail: "Inspecting model option handling",
+          status: "running",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+      ],
+      completed: [],
+    });
+  });
+
+  it("moves finished tasks to recent completed tasks and omits codex goal bookkeeping", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "goal-progress",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        payload: {
+          taskId: "codex-goal",
+          detail: "Thread goal set: Keep going",
+        },
+      }),
+      makeActivity({
+        id: "task-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        payload: {
+          taskId: "task-subagent-1",
+          taskType: "subagent",
+          detail: "Checking UI state",
+        },
+      }),
+      makeActivity({
+        id: "task-completed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.completed",
+        payload: {
+          taskId: "task-subagent-1",
+          status: "completed",
+          summary: "UI state checked",
+        },
+      }),
+    ];
+
+    expect(deriveActiveTasksState(activities)).toEqual({
+      running: [],
+      completed: [
+        {
+          taskId: "task-subagent-1",
+          taskType: "subagent",
+          summary: "UI state checked",
+          detail: "UI state checked",
+          status: "completed",
+          updatedAt: "2026-02-23T00:00:03.000Z",
+        },
+      ],
+    });
   });
 });
 

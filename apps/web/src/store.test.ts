@@ -739,7 +739,7 @@ describe("incremental orchestration updates", () => {
     });
     const state = makeState(thread);
 
-    const next = applyOrchestrationEvents(
+    const afterMessage = applyOrchestrationEvents(
       state,
       [
         makeEvent(
@@ -776,9 +776,36 @@ describe("incremental orchestration updates", () => {
       localEnvironmentId,
     );
 
-    expect(threadsOf(next)[0]?.session?.status).toBe("running");
-    expect(threadsOf(next)[0]?.latestTurn?.state).toBe("completed");
-    expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+    expect(threadsOf(afterMessage)[0]?.session?.status).toBe("running");
+    expect(threadsOf(afterMessage)[0]?.latestTurn?.state).toBe("running");
+    expect(threadsOf(afterMessage)[0]?.latestTurn?.completedAt).toBeNull();
+    expect(threadsOf(afterMessage)[0]?.latestTurn?.assistantMessageId).toBe("assistant-1");
+    expect(threadsOf(afterMessage)[0]?.messages).toHaveLength(1);
+
+    const afterReady = applyOrchestrationEvent(
+      afterMessage,
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-02-27T00:00:04.000Z",
+          },
+        },
+        { sequence: 4 },
+      ),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(afterReady)[0]?.session?.status).toBe("ready");
+    expect(threadsOf(afterReady)[0]?.latestTurn?.state).toBe("completed");
+    expect(threadsOf(afterReady)[0]?.latestTurn?.completedAt).toBe("2026-02-27T00:00:04.000Z");
   });
 
   it("does not regress latestTurn when an older turn diff completes late", () => {
