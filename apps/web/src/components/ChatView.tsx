@@ -108,13 +108,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import {
-  ChevronDownIcon,
-  GitBranchPlusIcon,
-  LoaderIcon,
-  TriangleAlertIcon,
-  WifiOffIcon,
-} from "lucide-react";
+import { ChevronDownIcon, LoaderIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -3481,14 +3475,26 @@ export default function ChatView(props: ChatViewProps) {
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
+    const interruptedThreadId = activeThread.id;
     const activeTurnId =
       activeThread.session?.activeTurnId ?? activeLatestTurn?.turnId ?? undefined;
     await api.orchestration.dispatchCommand({
       type: "thread.turn.interrupt",
       commandId: newCommandId(),
-      threadId: activeThread.id,
+      threadId: interruptedThreadId,
       ...(activeTurnId ? { turnId: activeTurnId } : {}),
       createdAt: new Date().toISOString(),
+    });
+    updateQueuedFollowUps((current) => {
+      const retained: QueuedThreadFollowUp[] = [];
+      for (const followUp of current) {
+        if (followUp.threadId === interruptedThreadId) {
+          revokeQueuedFollowUpPreviewUrls(followUp);
+        } else {
+          retained.push(followUp);
+        }
+      }
+      return retained;
     });
   };
 
@@ -4121,6 +4127,8 @@ export default function ChatView(props: ChatViewProps) {
     }
     void onRevertToTurnCountRef.current(targetTurnCount);
   }, []);
+  const canForkThread =
+    isServerThread && !isConnecting && !activeEnvironmentUnavailable && phase !== "running";
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -4210,8 +4218,11 @@ export default function ChatView(props: ChatViewProps) {
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
+              onForkThread={onForkThread}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
+              showForkThreadButton={isServerThread}
+              canForkThread={canForkThread}
               markdownCwd={gitCwd ?? undefined}
               resolvedTheme={resolvedTheme}
               timestampFormat={timestampFormat}
@@ -4247,23 +4258,6 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative isolate">
               <ComposerBannerStack className="relative z-30" items={composerBannerItems} />
               <div className="relative z-10">
-                {isServerThread ? (
-                  <div className="mb-1 flex justify-end">
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="ghost"
-                      className="h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground"
-                      disabled={
-                        isConnecting || Boolean(activeEnvironmentUnavailable) || phase === "running"
-                      }
-                      onClick={() => void onForkThread()}
-                    >
-                      <GitBranchPlusIcon className="size-3.5" />
-                      Fork thread
-                    </Button>
-                  </div>
-                ) : null}
                 <ChatComposer
                   ref={composerRef}
                   composerDraftTarget={composerDraftTarget}

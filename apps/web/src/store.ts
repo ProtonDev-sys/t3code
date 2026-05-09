@@ -1420,8 +1420,22 @@ function applyEnvironmentOrchestrationEvent(
         if (latestTurn === null || latestTurn.turnId !== event.payload.turnId) {
           return thread;
         }
+        const shouldClearSession =
+          thread.session?.orchestrationStatus === "running" &&
+          (thread.session.activeTurnId === undefined ||
+            thread.session.activeTurnId === event.payload.turnId);
         return {
           ...thread,
+          session:
+            shouldClearSession && thread.session
+              ? {
+                  ...thread.session,
+                  status: "ready",
+                  orchestrationStatus: "ready",
+                  activeTurnId: undefined,
+                  updatedAt: event.payload.createdAt,
+                }
+              : thread.session,
           latestTurn: buildLatestTurn({
             previous: latestTurn,
             turnId: event.payload.turnId,

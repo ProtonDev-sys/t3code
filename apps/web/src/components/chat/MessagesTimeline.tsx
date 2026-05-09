@@ -20,6 +20,7 @@ import {
   CheckIcon,
   CircleAlertIcon,
   EyeIcon,
+  GitBranchPlusIcon,
   GlobeIcon,
   HammerIcon,
   type LucideIcon,
@@ -82,8 +83,11 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onForkThread: () => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  forkButtonRowId: string | null;
+  canForkThread: boolean;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -108,8 +112,11 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onForkThread: () => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  showForkThreadButton: boolean;
+  canForkThread: boolean;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -136,8 +143,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  onForkThread,
   isRevertingCheckpoint,
   onImageExpand,
+  showForkThreadButton,
+  canForkThread,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -165,6 +175,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const forkButtonRowId = useMemo(() => {
+    if (!showForkThreadButton) {
+      return null;
+    }
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (
+        row?.kind === "message" &&
+        row.message.role === "assistant" &&
+        row.showAssistantCopyButton
+      ) {
+        return row.id;
+      }
+    }
+    return null;
+  }, [rows, showForkThreadButton]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
@@ -207,8 +233,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onForkThread,
       onImageExpand,
       onOpenTurnDiff,
+      forkButtonRowId,
+      canForkThread,
     }),
     [
       activeTurnInProgress,
@@ -223,8 +252,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onForkThread,
       onImageExpand,
       onOpenTurnDiff,
+      forkButtonRowId,
+      canForkThread,
     ],
   );
 
@@ -397,6 +429,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
             showCopyButton: row.showAssistantCopyButton,
             streaming: row.message.streaming || assistantTurnStillInProgress,
           });
+          const showForkButtonForRow = ctx.forkButtonRowId === row.id;
           return (
             <>
               {row.showCompletionDivider && (
@@ -437,13 +470,35 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                     )}
                   </p>
                   {assistantCopyState.visible ? (
-                    <div className="flex items-center opacity-0 transition-opacity duration-200  group-hover/assistant:opacity-100">
+                    <div className="flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">
                       <MessageCopyButton
                         text={assistantCopyState.text ?? ""}
                         size="icon-xs"
                         variant="outline"
                         className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
                       />
+                      {showForkButtonForRow ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                type="button"
+                                size="icon-xs"
+                                variant="outline"
+                                disabled={!ctx.canForkThread}
+                                className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
+                                onClick={ctx.onForkThread}
+                                aria-label="Fork thread"
+                              >
+                                <GitBranchPlusIcon className="size-3" />
+                              </Button>
+                            }
+                          />
+                          <TooltipPopup>
+                            <p>Fork thread</p>
+                          </TooltipPopup>
+                        </Tooltip>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

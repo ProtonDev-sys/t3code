@@ -1071,11 +1071,29 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not guaranteed to be provider turn ids, so
-    // interrupt by session and project the accepted stop locally once the
-    // provider has accepted the interrupt request.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
-    if (thread.session?.status === "running") {
+    // Prefer the captured active turn id from the original command. The
+    // projection may already have cleared `thread.session.activeTurnId` by the
+    // time this reactor observes the event, but Codex still needs the running
+    // turn id to interrupt the active request reliably.
+    const interrupted = yield* providerService
+      .interruptTurn({
+        threadId: event.payload.threadId,
+        ...(event.payload.turnId ? { turnId: event.payload.turnId } : {}),
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.interrupt.failed",
+            summary: "Provider turn interrupt failed",
+            detail: Cause.pretty(cause),
+            turnId: event.payload.turnId ?? null,
+            createdAt: event.payload.createdAt,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+    if (interrupted && thread.session?.status === "running") {
       yield* setThreadSession({
         threadId: thread.id,
         session: {

@@ -7,6 +7,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -806,6 +807,52 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(afterReady)[0]?.session?.status).toBe("ready");
     expect(threadsOf(afterReady)[0]?.latestTurn?.state).toBe("completed");
     expect(threadsOf(afterReady)[0]?.latestTurn?.completedAt).toBe("2026-02-27T00:00:04.000Z");
+  });
+
+  it("clears a running client session when an interrupt is requested", () => {
+    const turnId = TurnId.make("turn-1");
+    const interruptedAt = "2026-02-27T00:00:05.000Z";
+    const thread = makeThread({
+      session: {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: turnId,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      },
+      latestTurn: {
+        turnId,
+        state: "running",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:01.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    });
+    const state = makeState(thread);
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.turn-interrupt-requested", {
+        threadId: thread.id,
+        turnId,
+        createdAt: interruptedAt,
+      }),
+      localEnvironmentId,
+    );
+
+    const updatedThread = threadsOf(next)[0];
+    expect(updatedThread?.session?.status).toBe("ready");
+    expect(updatedThread?.session?.orchestrationStatus).toBe("ready");
+    expect(updatedThread?.session?.activeTurnId).toBeUndefined();
+    expect(updatedThread?.session?.updatedAt).toBe(interruptedAt);
+    expect(updatedThread?.latestTurn).toMatchObject({
+      turnId,
+      state: "interrupted",
+      completedAt: interruptedAt,
+    });
   });
 
   it("does not regress latestTurn when an older turn diff completes late", () => {

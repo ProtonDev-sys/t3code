@@ -844,6 +844,16 @@ function parseThreadSnapshot(
   };
 }
 
+function findLatestInProgressTurnId(response: EffectCodexSchema.V2ThreadReadResponse) {
+  for (let index = response.thread.turns.length - 1; index >= 0; index -= 1) {
+    const turn = response.thread.turns[index];
+    if (turn?.status === "inProgress") {
+      return TurnId.make(turn.id);
+    }
+  }
+  return undefined;
+}
+
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
 ): Effect.Effect<
@@ -1763,7 +1773,15 @@ export const makeCodexSessionRuntime = (
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
           const session = yield* Ref.get(sessionRef);
-          const effectiveTurnId = turnId ?? session.activeTurnId;
+          const effectiveTurnId =
+            turnId ??
+            session.activeTurnId ??
+            findLatestInProgressTurnId(
+              yield* client.request("thread/read", {
+                threadId: providerThreadId,
+                includeTurns: true,
+              }),
+            );
           if (!effectiveTurnId) {
             return;
           }
