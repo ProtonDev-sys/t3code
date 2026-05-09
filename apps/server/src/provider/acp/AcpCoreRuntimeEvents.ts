@@ -5,6 +5,7 @@ import {
   type EventId,
   type ProviderApprovalDecision,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
   type ThreadTokenUsageSnapshot,
@@ -245,6 +246,7 @@ export function makeAcpContentDeltaEvent(input: {
 export function makeAcpTokenUsageEvent(input: {
   readonly stamp: AcpEventStamp;
   readonly provider: ProviderDriverKind;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly usage: ThreadTokenUsageSnapshot;
@@ -254,10 +256,42 @@ export function makeAcpTokenUsageEvent(input: {
     type: "thread.token-usage.updated",
     ...input.stamp,
     provider: input.provider,
+    ...(input.providerInstanceId !== undefined
+      ? { providerInstanceId: input.providerInstanceId }
+      : {}),
     threadId: input.threadId,
     turnId: input.turnId,
     payload: {
       usage: input.usage,
+    },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: input.rawPayload,
+    },
+  };
+}
+
+export function makeAcpAccountRateLimitsUpdatedEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderDriverKind;
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly rateLimits: unknown;
+  readonly rawPayload: unknown;
+}): ProviderRuntimeEvent {
+  return {
+    type: "account.rate-limits.updated",
+    ...input.stamp,
+    provider: input.provider,
+    ...(input.providerInstanceId !== undefined
+      ? { providerInstanceId: input.providerInstanceId }
+      : {}),
+    threadId: input.threadId,
+    turnId: input.turnId,
+    payload: {
+      rateLimits: input.rateLimits,
     },
     raw: {
       source: "acp.jsonrpc",

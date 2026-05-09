@@ -484,6 +484,9 @@ function ProviderCustomAgentsSection(props: {
   const [editorDraft, setEditorDraft] = useState<CustomAgentDraftRow | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const isCodex = props.driverKind === ProviderDriverKind.make("codex");
+  const editorDescription = isCodex
+    ? "Define native Codex fields once. T3 writes enabled Codex agents to TOML."
+    : "Define reusable prompt instructions for this provider instance.";
 
   useEffect(() => {
     const nextRows = props.customAgents.map(makeCustomAgentDraftRow);
@@ -616,7 +619,8 @@ function ProviderCustomAgentsSection(props: {
         <div className="min-w-0">
           <span className="text-xs font-medium text-foreground">Agents</span>
           <span className="mt-1 block text-xs text-muted-foreground">
-            Agents appear in chat model controls. Native Codex agents are loaded automatically.
+            Agents appear in chat model controls. Native Codex agents are loaded automatically for
+            Codex.
           </span>
         </div>
         <Button
@@ -772,9 +776,7 @@ function ProviderCustomAgentsSection(props: {
         <DialogPopup className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editorDraft?.id ? "Edit Agent" : "Add Agent"}</DialogTitle>
-            <DialogDescription>
-              Define the native Codex fields once. T3 writes enabled Codex agents to TOML.
-            </DialogDescription>
+            <DialogDescription>{editorDescription}</DialogDescription>
           </DialogHeader>
           {editorDraft ? (
             <DialogPanel className="grid gap-3">

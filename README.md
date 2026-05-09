@@ -1,15 +1,16 @@
 # T3 Code
 
-T3 Code is a minimal web GUI for coding agents (currently Codex and Claude, more coming soon).
+T3 Code is a minimal web GUI for coding agents.
 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, and OpenCode.
+> T3 Code currently supports Codex, Claude, GitHub Copilot CLI, and OpenCode.
 > Install and authenticate at least one provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
+> - Copilot: install [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli) and run `copilot login`
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
 ### Run without installing
@@ -20,7 +21,7 @@ npx t3
 
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Install the latest version of the desktop app from [GitHub Releases](https://github.com/ProtonDev-sys/t3code/releases), or from your favorite package registry:
 
 #### Windows (`winget`)
 
@@ -47,6 +48,8 @@ We are very very early in this project. Expect bugs.
 We are not accepting contributions yet.
 
 Observability guide: [docs/observability.md](./docs/observability.md)
+
+Usage limits in Settings show account-level provider limits reported by Codex and GitHub Copilot CLI. The Statistics page only uses usage generated inside T3 Code; Codex local history is intentionally ignored because its cost estimate is not reliable enough for totals.
 
 ## If you REALLY want to contribute still.... read this first
 

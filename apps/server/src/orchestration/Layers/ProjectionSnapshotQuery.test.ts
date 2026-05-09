@@ -1347,6 +1347,14 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(threadDetail.value.latestTurn?.state, "running");
         assert.equal(threadDetail.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
       }
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const shellThread = shellSnapshot.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-1"),
+      );
+      assert.equal(shellThread?.latestTurn?.turnId, asTurnId("turn-running"));
+      assert.equal(shellThread?.latestTurn?.state, "running");
+      assert.equal(shellThread?.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
     }),
   );
 });

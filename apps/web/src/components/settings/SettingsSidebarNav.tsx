@@ -130,7 +130,7 @@ const SETTINGS_SEARCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
   },
   {
     label: "Providers",
-    description: "Codex, Claude, OpenCode, provider binaries, models, and favorites.",
+    description: "Codex, Claude, Copilot, OpenCode, provider binaries, models, and favorites.",
     to: "/settings/providers",
     icon: BoxIcon,
     keywords: ["provider", "codex", "claude", "opencode", "binary", "favorite"],
@@ -235,7 +235,7 @@ const SETTINGS_SEARCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> = [
   },
   {
     label: "Provider instances",
-    description: "Codex, Claude, OpenCode, provider binaries, models, and favorites.",
+    description: "Codex, Claude, Copilot, OpenCode, provider binaries, models, and favorites.",
     to: "/settings/providers",
     icon: BoxIcon,
     keywords: ["provider", "codex", "claude", "opencode", "binary", "favorite"],

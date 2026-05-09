@@ -42,6 +42,7 @@ export interface CodexUsageWindowDescriptor {
 }
 
 const WEEKLY_WINDOW_DURATION_MINS = 7 * 24 * 60;
+const MONTHLY_WINDOW_DURATION_MINS = 30 * 24 * 60;
 const DAILY_WINDOW_DURATION_MINS = 24 * 60;
 const HOURLY_WINDOW_DURATION_MINS = 60;
 
@@ -157,6 +158,9 @@ function formatWindowDurationLabel(value: number | null): string | null {
   }
   if (value === WEEKLY_WINDOW_DURATION_MINS) {
     return "Weekly";
+  }
+  if (value === MONTHLY_WINDOW_DURATION_MINS) {
+    return "Monthly";
   }
   if (value % WEEKLY_WINDOW_DURATION_MINS === 0) {
     return `${value / WEEKLY_WINDOW_DURATION_MINS}-week`;
@@ -444,6 +448,12 @@ export function formatCodexUsageWindowLimitLabel(window: CodexUsageWindowDescrip
   }
 
   const duration = window.usage.windowDurationMins;
+  if (duration === MONTHLY_WINDOW_DURATION_MINS) {
+    return "Monthly usage limit";
+  }
+  if (duration !== null && duration > 0 && duration % DAILY_WINDOW_DURATION_MINS === 0) {
+    return `${formatWindowDurationLabel(duration)} usage limit`;
+  }
   if (duration !== null && duration > 0 && duration % HOURLY_WINDOW_DURATION_MINS === 0) {
     const hours = duration / HOURLY_WINDOW_DURATION_MINS;
     return `${hours} hour usage limit`;

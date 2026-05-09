@@ -2,6 +2,11 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
 import type { ThreadTokenUsageSnapshot, ToolLifecycleItemType } from "@t3tools/contracts";
 
+import {
+  convertCopilotQuotaSnapshotsToRateLimits,
+  extractCopilotQuotaSnapshots,
+} from "../copilotUsage.ts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -73,6 +78,11 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "UsageUpdated";
       readonly usage: ThreadTokenUsageSnapshot;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "AccountRateLimitsUpdated";
+      readonly rateLimits: unknown;
       readonly rawPayload: unknown;
     };
 
@@ -480,12 +490,29 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       break;
     }
     case "usage_update": {
+      const quotaSnapshots = extractCopilotQuotaSnapshots(params);
+      const rateLimits = convertCopilotQuotaSnapshotsToRateLimits(quotaSnapshots);
+      if (rateLimits) {
+        events.push({
+          _tag: "AccountRateLimitsUpdated",
+          rateLimits,
+          rawPayload: params,
+        });
+      }
       if (upd.used > 0) {
+        const costAmount =
+          upd.cost?.currency === "USD" &&
+          typeof upd.cost.amount === "number" &&
+          Number.isFinite(upd.cost.amount) &&
+          upd.cost.amount >= 0
+            ? upd.cost.amount
+            : null;
         events.push({
           _tag: "UsageUpdated",
           usage: {
             usedTokens: upd.used,
             ...(upd.size > 0 ? { maxTokens: upd.size } : {}),
+            ...(costAmount !== null ? { totalCostUsd: costAmount, costCurrency: "USD" } : {}),
           },
           rawPayload: params,
         });

@@ -25,6 +25,14 @@ function formatUsageCost(value: number): string {
   }).format(value);
 }
 
+function formatToolUseCount(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+  const rounded = Math.max(0, Math.round(value));
+  return `${new Intl.NumberFormat().format(rounded)} tool call${rounded === 1 ? "" : "s"}`;
+}
+
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   tokenUsage?: ProviderTokenUsageTotals | null;
@@ -38,6 +46,12 @@ export function ContextWindowMeter(props: {
   const cachedInputTokens =
     (tokenUsage?.cachedInputTokens ?? 0) + (tokenUsage?.cacheCreationInputTokens ?? 0);
   const outputTokens = (tokenUsage?.outputTokens ?? 0) + (tokenUsage?.reasoningOutputTokens ?? 0);
+  const toolUseLabel = formatToolUseCount(usage.toolUses ?? null);
+  const totalCostUsd = usage.totalCostUsd ?? null;
+  const providerCostLabel =
+    usage.costCurrency === "USD" && totalCostUsd !== null && totalCostUsd > 0
+      ? formatUsageCost(totalCostUsd)
+      : null;
 
   return (
     <Popover>
@@ -121,6 +135,14 @@ export function ContextWindowMeter(props: {
               tokens
             </div>
           ) : null}
+          {toolUseLabel ? (
+            <div className="text-xs text-muted-foreground">{toolUseLabel}</div>
+          ) : null}
+          {providerCostLabel ? (
+            <div className="text-xs text-muted-foreground">
+              Provider reported session cost: {providerCostLabel}
+            </div>
+          ) : null}
           {usage.compactsAutomatically ? (
             <div className="text-xs text-muted-foreground">
               Automatically compacts its context when needed.
@@ -134,6 +156,8 @@ export function ContextWindowMeter(props: {
                   : "Token cost estimate unavailable"}
               </div>
               <div className="mt-1 whitespace-nowrap text-xs text-muted-foreground">
+                Total {formatContextWindowTokens(tokenUsage.totalTokens)}
+                <span className="mx-1">⋅</span>
                 In {formatContextWindowTokens(tokenUsage.inputTokens)}
                 <span className="mx-1">⋅</span>
                 Cached {formatContextWindowTokens(cachedInputTokens)}
@@ -142,8 +166,9 @@ export function ContextWindowMeter(props: {
               </div>
               {tokenUsage.estimatedCostUsd > 0 ? (
                 <div className="mt-1 max-w-72 text-xs text-muted-foreground">
-                  Estimate uses known API token rates and excludes account, tool, regional, batch,
-                  and subscription adjustments.
+                  Estimate uses reported input, cached, output, reasoning, and tool-call token usage
+                  when providers include it. Account, regional, batch, and subscription adjustments
+                  are not applied.
                 </div>
               ) : null}
             </div>

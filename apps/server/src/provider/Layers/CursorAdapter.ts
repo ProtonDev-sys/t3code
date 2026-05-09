@@ -55,6 +55,7 @@ import {
   type AcpSessionRuntimeShape,
 } from "../acp/AcpSessionRuntime.ts";
 import {
+  makeAcpAccountRateLimitsUpdatedEvent,
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
@@ -844,9 +845,29 @@ export function makeCursorAdapter<Settings = CursorSettings>(
                       makeAcpTokenUsageEvent({
                         stamp: yield* makeEventStamp(),
                         provider: provider,
+                        providerInstanceId: boundInstanceId,
                         threadId: ctx.threadId,
                         turnId: ctx.activeTurnId,
                         usage: event.usage,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    return;
+                  case "AccountRateLimitsUpdated":
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    yield* offerRuntimeEvent(
+                      makeAcpAccountRateLimitsUpdatedEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: provider,
+                        providerInstanceId: boundInstanceId,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        rateLimits: event.rateLimits,
                         rawPayload: event.rawPayload,
                       }),
                     );

@@ -265,6 +265,8 @@ describe("AcpRuntimeModel", () => {
         usage: {
           usedTokens: 12_345,
           maxTokens: 200_000,
+          totalCostUsd: 0.42,
+          costCurrency: "USD",
         },
         rawPayload: {
           sessionId: "session-1",
@@ -280,6 +282,69 @@ describe("AcpRuntimeModel", () => {
         },
       },
     ]);
+  });
+
+  it("projects Copilot ACP quota metadata into account rate-limit snapshots", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 12_345,
+        size: 200_000,
+        _meta: {
+          quotaSnapshots: {
+            weekly: {
+              isUnlimitedEntitlement: false,
+              entitlementRequests: 0,
+              usedRequests: 0,
+              remainingPercentage: 97.6,
+              resetDate: "2026-05-11T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events[0]).toEqual({
+      _tag: "AccountRateLimitsUpdated",
+      rateLimits: {
+        rateLimitsByLimitId: {
+          copilot_weekly: {
+            credits: null,
+            limitId: "copilot_weekly",
+            limitName: "Copilot weekly",
+            planType: "copilot",
+            primary: {
+              usedPercent: 2.4000000000000057,
+              resetsAt: 1_778_457_600,
+              windowDurationMins: 10_080,
+            },
+            rateLimitReachedType: null,
+            secondary: null,
+          },
+        },
+      },
+      rawPayload: {
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "usage_update",
+          used: 12_345,
+          size: 200_000,
+          _meta: {
+            quotaSnapshots: {
+              weekly: {
+                isUnlimitedEntitlement: false,
+                entitlementRequests: 0,
+                usedRequests: 0,
+                remainingPercentage: 97.6,
+                resetDate: "2026-05-11T00:00:00.000Z",
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result.events[1]?._tag).toBe("UsageUpdated");
   });
 
   it("keeps permission request parsing compatible with loose extension payloads", () => {

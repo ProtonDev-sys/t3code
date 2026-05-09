@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
+import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { type EnvironmentState, useStore } from "../../store";
 import { useProviderUsageSnapshots } from "../../hooks/useCodexUsage";
 
@@ -167,10 +168,14 @@ describe("useProviderUsageSnapshots", () => {
       },
     });
 
-    const mounted = await render(<ProviderUsageProbe />);
+    const mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderUsageProbe />
+      </AppAtomRegistryProvider>,
+    );
 
     try {
-      await expect.element(page.getByText("Provider usage probe: 0")).toBeInTheDocument();
+      await expect.element(page.getByText("Provider usage probe: 1")).toBeInTheDocument();
     } finally {
       await mounted.unmount();
     }
