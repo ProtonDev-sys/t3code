@@ -16,10 +16,15 @@ import { SettingsPageContainer } from "./settingsLayout";
 
 interface UsageLimitSectionDescriptor {
   readonly key: string;
-  readonly baseTitle: string;
   readonly title: string;
-  readonly providerName: string;
-  readonly windows: ReadonlyArray<CodexUsageWindowDescriptor>;
+  readonly rows: ReadonlyArray<UsageLimitRowDescriptor>;
+}
+
+interface UsageLimitRowDescriptor {
+  readonly key: string;
+  readonly title: string;
+  readonly description: string;
+  readonly window: CodexUsageWindowDescriptor;
 }
 
 function UsageProgress({ window }: { window: CodexUsageWindowDescriptor }) {
@@ -58,15 +63,14 @@ function CompactUsageRow({
   );
 }
 
-function UsageLimitRows({ windows }: { windows: ReadonlyArray<CodexUsageWindowDescriptor> }) {
-  return windows.map((window) => {
-    const reset = formatCodexUsageReset(window.usage.resetsAt);
+function UsageLimitRows({ rows }: { rows: ReadonlyArray<UsageLimitRowDescriptor> }) {
+  return rows.map((row) => {
     return (
       <CompactUsageRow
-        key={window.key}
-        title={formatCodexUsageWindowLimitLabel(window)}
-        description={reset ? `Resets ${reset}` : "Reset time unavailable"}
-        control={<UsageProgress window={window} />}
+        key={row.key}
+        title={row.title}
+        description={row.description}
+        control={<UsageProgress window={row.window} />}
       />
     );
   });
@@ -78,51 +82,73 @@ function UsageLimitSection({ section }: { section: UsageLimitSectionDescriptor }
       <h2 className="px-0 font-semibold text-foreground text-sm">{section.title}</h2>
       <div className="overflow-hidden rounded-lg border border-border/70 bg-card/45">
         <div className="divide-y divide-border/60">
-          <UsageLimitRows windows={section.windows} />
+          <UsageLimitRows rows={section.rows} />
         </div>
       </div>
     </section>
   );
 }
 
+function formatProviderScopedLimitTitle(
+  limit: CodexUsageLimitSnapshot,
+  providerName: string,
+): string {
+  const suffix = " usage limits";
+  const title = formatCodexUsageLimitTitle(limit);
+  const baseTitle = title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
+  const providerPrefix = `${providerName} `;
+  const scopedTitle = baseTitle.toLowerCase().startsWith(providerPrefix.toLowerCase())
+    ? baseTitle.slice(providerPrefix.length)
+    : baseTitle;
+  return scopedTitle.charAt(0).toUpperCase() + scopedTitle.slice(1);
+}
+
+function formatUsageLimitRow(input: {
+  readonly limit: CodexUsageLimitSnapshot;
+  readonly providerName: string;
+  readonly window: CodexUsageWindowDescriptor;
+  readonly windowCount: number;
+}): Omit<UsageLimitRowDescriptor, "key" | "window"> {
+  const baseTitle = formatProviderScopedLimitTitle(input.limit, input.providerName);
+  const windowTitle = formatCodexUsageWindowLimitLabel(input.window);
+  const reset = formatCodexUsageReset(input.window.usage.resetsAt);
+  return {
+    title: input.windowCount > 1 ? `${baseTitle} - ${windowTitle}` : baseTitle,
+    description: reset ? `${windowTitle} - Resets ${reset}` : windowTitle,
+  };
+}
+
 function buildUsageLimitSections(
   providerUsage: ReadonlyArray<ProviderUsageSnapshot>,
 ): ReadonlyArray<UsageLimitSectionDescriptor> {
-  const candidates = providerUsage.flatMap((snapshot) =>
-    (snapshot.accountUsage?.limits ?? []).flatMap((limit: CodexUsageLimitSnapshot) => {
+  return providerUsage.flatMap((snapshot) => {
+    const rows = (snapshot.accountUsage?.limits ?? []).flatMap((limit: CodexUsageLimitSnapshot) => {
       const windows = getCodexUsageWindows(limit);
-      if (windows.length === 0) {
-        return [];
-      }
-
-      const baseTitle = formatCodexUsageLimitTitle(limit);
-      return [
-        {
-          key: `${snapshot.entry.instanceId}:${limit.key}`,
-          baseTitle,
+      return windows.map((window) => {
+        const row = formatUsageLimitRow({
+          limit,
           providerName: snapshot.entry.displayName,
-          windows,
-        },
-      ];
-    }),
-  );
+          window,
+          windowCount: windows.length,
+        });
+        return {
+          key: `${limit.key}:${window.key}`,
+          title: row.title,
+          description: row.description,
+          window,
+        };
+      });
+    });
 
-  const titleCounts = new Map<string, number>();
-  for (const section of candidates) {
-    titleCounts.set(section.baseTitle, (titleCounts.get(section.baseTitle) ?? 0) + 1);
-  }
-
-  return candidates.map((section) => {
-    const isDuplicateTitle = (titleCounts.get(section.baseTitle) ?? 0) > 1;
-    return {
-      key: section.key,
-      baseTitle: section.baseTitle,
-      title: isDuplicateTitle
-        ? `${section.baseTitle} (${section.providerName})`
-        : section.baseTitle,
-      providerName: section.providerName,
-      windows: section.windows,
-    };
+    return rows.length > 0
+      ? [
+          {
+            key: snapshot.entry.instanceId,
+            title: snapshot.entry.displayName,
+            rows,
+          },
+        ]
+      : [];
   });
 }
 

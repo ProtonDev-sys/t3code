@@ -18,6 +18,50 @@ import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/ser
 import { useStore } from "../../store";
 import { CodexUsageSettingsPanel } from "./CodexUsageSettings";
 
+function makeCodexProvider(): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    displayName: "Codex",
+    enabled: true,
+    installed: true,
+    version: "0.74.0",
+    status: "ready",
+    auth: {
+      status: "authenticated",
+      label: "OpenAI",
+    },
+    checkedAt: "2026-05-09T20:17:35.530Z",
+    usage: {
+      checkedAt: "2026-05-09T20:17:35.530Z",
+      rateLimits: {
+        rateLimitsByLimitId: {
+          codex: {
+            credits: null,
+            limitId: "codex",
+            limitName: "Codex",
+            planType: "plus",
+            primary: {
+              resetsAt: 1778376068,
+              usedPercent: 2,
+              windowDurationMins: 300,
+            },
+            rateLimitReachedType: null,
+            secondary: {
+              resetsAt: 1778457600,
+              usedPercent: 64,
+              windowDurationMins: 10080,
+            },
+          },
+        },
+      },
+    },
+    models: [],
+    slashCommands: [],
+    skills: [],
+  } satisfies ServerProvider;
+}
+
 function makeCopilotProvider(): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make("copilot"),
@@ -44,6 +88,19 @@ function makeCopilotProvider(): ServerProvider {
             primary: {
               resetsAt: 1780873200,
               usedPercent: 14,
+              windowDurationMins: 43200,
+            },
+            rateLimitReachedType: null,
+            secondary: null,
+          },
+          copilot_completions: {
+            credits: null,
+            limitId: "copilot_completions",
+            limitName: "Copilot completions",
+            planType: "copilot",
+            primary: {
+              resetsAt: 1780873200,
+              usedPercent: 0,
               windowDurationMins: 43200,
             },
             rateLimitReachedType: null,
@@ -108,7 +165,7 @@ function makeServerConfig(): ServerConfig {
     keybindingsConfigPath: "C:\\workspace\\.config\\keybindings.json",
     keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
     issues: [],
-    providers: [makeCopilotProvider()],
+    providers: [makeCodexProvider(), makeCopilotProvider()],
     availableEditors: [],
     observability: {
       logsDirectoryPath: "C:\\workspace\\.config\\logs",
@@ -131,7 +188,7 @@ describe("CodexUsageSettingsPanel", () => {
     });
   });
 
-  it("shows Copilot account usage-limit windows from provider status", async () => {
+  it("groups account usage-limit windows by provider", async () => {
     setServerConfigSnapshot(makeServerConfig());
 
     const mounted = await render(
@@ -144,15 +201,33 @@ describe("CodexUsageSettingsPanel", () => {
       await expect
         .element(page.getByRole("heading", { name: "Usage", exact: true }))
         .toBeInTheDocument();
-      await expect.element(page.getByText("Copilot chat usage limits")).toBeInTheDocument();
-      await expect.element(page.getByText("Copilot session usage limits")).toBeInTheDocument();
-      await expect.element(page.getByText("Copilot weekly usage limits")).toBeInTheDocument();
-      await expect.element(page.getByText("Monthly usage limit")).toBeInTheDocument();
-      await expect.element(page.getByText("5 hour usage limit").first()).toBeInTheDocument();
-      await expect.element(page.getByText("Weekly usage limit").first()).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("heading", { name: "Codex", exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByRole("heading", { name: "Copilot", exact: true }))
+        .toBeInTheDocument();
+      await expect.element(page.getByText("General - 5 hour usage limit")).toBeInTheDocument();
+      await expect.element(page.getByText("General - Weekly usage limit")).toBeInTheDocument();
+      await expect.element(page.getByText("Chat", { exact: true })).toBeInTheDocument();
+      await expect.element(page.getByText("Completions", { exact: true })).toBeInTheDocument();
+      await expect.element(page.getByText("Session", { exact: true })).toBeInTheDocument();
+      await expect.element(page.getByText("Weekly", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(page.getByText("Monthly usage limit", { exact: false }).first())
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByText("5 hour usage limit", { exact: false }).first())
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByText("Weekly usage limit", { exact: false }).first())
+        .toBeInTheDocument();
       await expect.element(page.getByText("86% left")).toBeInTheDocument();
+      await expect.element(page.getByText("100% left")).toBeInTheDocument();
       await expect.element(page.getByText("99% left")).toBeInTheDocument();
-      await expect.element(page.getByText("98% left")).toBeInTheDocument();
+      await expect.element(page.getByText("98% left").first()).toBeInTheDocument();
+      await expect.element(page.getByText("36% left")).toBeInTheDocument();
+      await expect.element(page.getByText("Copilot chat usage limits")).not.toBeInTheDocument();
       await expect.element(page.getByText("No account-limit data")).not.toBeInTheDocument();
     } finally {
       await mounted.unmount();
