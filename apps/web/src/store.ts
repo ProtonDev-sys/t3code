@@ -1343,7 +1343,7 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
           deletedAt: null,
-          messages: [],
+          messages: event.payload.copiedMessages ?? [],
           proposedPlans: [],
           activities: [],
           checkpoints: [],

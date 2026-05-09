@@ -11,6 +11,7 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
+  ProviderForkThreadInput,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -56,6 +57,11 @@ export interface ProviderAdapterShape<TError> {
   readonly startSession: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
+
+  /**
+   * Fork a provider-native thread and bind the fork to a new T3 thread id.
+   */
+  readonly forkThread?: (input: ProviderForkThreadInput) => Effect.Effect<ProviderSession, TError>;
 
   /**
    * Send a turn to an active provider session.

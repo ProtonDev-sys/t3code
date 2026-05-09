@@ -1,9 +1,13 @@
 import {
   ChevronDownIcon,
   ChevronsLeftRightEllipsisIcon,
+  CloudIcon,
+  NetworkIcon,
   PlusIcon,
   QrCodeIcon,
   RefreshCwIcon,
+  ShieldCheckIcon,
+  ServerIcon,
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -72,6 +76,7 @@ import {
 import { Textarea } from "../ui/textarea";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
 import { readHostedPairingRequest } from "../../hostedPairing";
+import { defaultProtocolForBareHost } from "../../environments/remote/target";
 import {
   createServerPairingCredential,
   fetchSessionState,
@@ -266,7 +271,7 @@ function parsePairingUrlFields(
     const urlLikeInput =
       /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//u.test(trimmed) || trimmed.startsWith("//")
         ? trimmed
-        : `https://${trimmed}`;
+        : `${defaultProtocolForBareHost(trimmed)}://${trimmed}`;
     const url = new URL(urlLikeInput, window.location.origin);
     const hostedPairingRequest = readHostedPairingRequest(url);
     if (hostedPairingRequest) {
@@ -2459,7 +2464,7 @@ export function ConnectionsSettings() {
     <SettingsPageContainer>
       {canManageLocalBackend ? (
         <>
-          <SettingsSection title="Manage local backend">
+          <SettingsSection title="Manage local backend" icon={<ServerIcon className="size-3.5" />}>
             {primaryVersionMismatch ? (
               <SettingsRow
                 title="Version drift"
@@ -2487,6 +2492,7 @@ export function ConnectionsSettings() {
           {isLocalBackendRemotelyReachable ? (
             <SettingsSection
               title="Authorized clients"
+              icon={<ShieldCheckIcon className="size-3.5" />}
               headerAction={
                 <AuthorizedClientsHeaderAction
                   clientSessions={desktopClientSessions}
@@ -2657,7 +2663,7 @@ export function ConnectionsSettings() {
           </Dialog>
         </>
       ) : (
-        <SettingsSection title="Local backend access">
+        <SettingsSection title="Local backend access" icon={<NetworkIcon className="size-3.5" />}>
           <SettingsRow
             title="Owner tools"
             description="Pairing links and client-session management are only available to owner sessions for this backend."
@@ -2667,6 +2673,7 @@ export function ConnectionsSettings() {
 
       <SettingsSection
         title="Remote environments"
+        icon={<CloudIcon className="size-3.5" />}
         headerAction={
           <Dialog
             open={addBackendDialogOpen}

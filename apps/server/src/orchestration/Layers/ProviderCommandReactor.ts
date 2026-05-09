@@ -38,6 +38,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.fork-requested"
       | "thread.turn-start-requested"
       | "thread.turn-steer-requested"
       | "thread.turn-interrupt-requested"
@@ -232,6 +233,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.thread.fork.failed"
       | "provider.turn.steer.failed"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
@@ -704,6 +706,73 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const processThreadForkRequested = Effect.fn("processThreadForkRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.fork-requested" }>,
+  ) {
+    const targetThread = yield* resolveThread(event.payload.threadId);
+    if (!targetThread) {
+      return;
+    }
+    const forkThread = providerService.forkThread;
+    if (!forkThread) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.thread.fork.failed",
+        summary: "Provider thread fork failed",
+        detail: "The active provider service does not support thread forking.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    const handleForkFailure = (cause: Cause.Cause<unknown>) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.thread.fork.failed",
+        summary: "Provider thread fork failed",
+        detail: formatFailureDetail(cause),
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.catchCause((recoveryCause) =>
+          Effect.logWarning("provider command reactor failed to recover thread fork failure", {
+            eventType: event.type,
+            threadId: event.payload.threadId,
+            sourceThreadId: event.payload.sourceThreadId,
+            cause: Cause.pretty(recoveryCause),
+            originalCause: Cause.pretty(cause),
+          }),
+        ),
+      );
+
+    yield* forkThread({
+      sourceThreadId: event.payload.sourceThreadId,
+      targetThreadId: event.payload.threadId,
+      modelSelection: event.payload.modelSelection,
+      runtimeMode: event.payload.runtimeMode,
+    }).pipe(
+      Effect.flatMap((session) =>
+        setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            threadId: event.payload.threadId,
+            status: mapProviderSessionStatusToOrchestrationStatus(session.status),
+            providerName: session.provider,
+            ...(session.providerInstanceId !== undefined
+              ? { providerInstanceId: session.providerInstanceId }
+              : {}),
+            runtimeMode: event.payload.runtimeMode,
+            activeTurnId: null,
+            lastError: session.lastError ?? null,
+            updatedAt: session.updatedAt,
+          },
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+      Effect.catchCause(handleForkFailure),
+    );
+  });
+
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
@@ -717,8 +786,19 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    const projectedMessage = thread.messages.find((entry) => entry.id === event.payload.messageId);
+    const message =
+      projectedMessage?.role === "user"
+        ? projectedMessage
+        : event.payload.message?.role === "user"
+          ? {
+              id: event.payload.message.messageId,
+              role: event.payload.message.role,
+              text: event.payload.message.text,
+              attachments: event.payload.message.attachments,
+            }
+          : null;
+    if (!message) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -729,7 +809,11 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    if (isProviderTurnActivelyRunning(thread.session, thread.latestTurn)) {
+    const latestTurnForActiveCheck =
+      event.payload.latestTurn?.turnId === thread.session?.activeTurnId
+        ? (event.payload.latestTurn ?? null)
+        : thread.latestTurn;
+    if (isProviderTurnActivelyRunning(thread.session, latestTurnForActiveCheck)) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -743,7 +827,9 @@ const make = Effect.gen(function* () {
     }
 
     const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
+      thread.messages.filter((entry) => entry.role === "user").length +
+        (projectedMessage ? 0 : 1) ===
+      1;
     if (isFirstUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
@@ -1147,6 +1233,9 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      case "thread.fork-requested":
+        yield* processThreadForkRequested(event);
+        return;
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
@@ -1187,6 +1276,7 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.fork-requested" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-steer-requested" ||
         event.type === "thread.turn-interrupt-requested" ||

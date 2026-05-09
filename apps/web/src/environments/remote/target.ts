@@ -16,12 +16,35 @@ function normalizeRemoteBaseUrl(rawValue: string): URL {
   const normalizedInput =
     /^[a-zA-Z][a-zA-Z\d+-]*:\/\//.test(trimmed) || trimmed.startsWith("//")
       ? trimmed
-      : `https://${trimmed}`;
+      : `${defaultProtocolForBareHost(trimmed)}://${trimmed}`;
   const url = new URL(normalizedInput, window.location.origin);
   url.pathname = "/";
   url.search = "";
   url.hash = "";
   return url;
+}
+
+export function defaultProtocolForBareHost(rawValue: string): "http" | "https" {
+  const host = rawValue
+    .trim()
+    .replace(/^\/\//u, "")
+    .split(/[/?#]/u)[0]!
+    .replace(/^\[|\]$/gu, "")
+    .split(":")[0]!
+    .toLowerCase();
+
+  if (
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    host.startsWith("127.") ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./u.test(host)
+  ) {
+    return "http";
+  }
+  return "https";
 }
 
 function toHttpBaseUrl(url: URL): string {

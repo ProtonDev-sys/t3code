@@ -109,6 +109,7 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
+  buildComposerBooleanTraitModelOptions,
   ComposerFastModeMenuCheckboxItem,
   ComposerContextWindowDropdown,
   ComposerReasoningDropdown,
@@ -175,30 +176,52 @@ const ComposerFooterStatusStrip = memo(function ComposerFooterStatusStrip(props:
   planSidebarLabel: string;
   planSidebarOpen: boolean;
   onTogglePlanSidebar: () => void;
+  onTraitStatusClick: (item: ComposerTraitStatusItem) => void;
+  className?: string;
 }) {
   const showPlanMode = props.showInteractionModeToggle && props.interactionMode === "plan";
   const showPlanView = props.showPlanToggle && !showPlanMode;
 
   return (
     <div
-      className="-mx-0.5 flex min-w-0 select-none items-center gap-1 overflow-x-auto px-0.5 text-[11px] leading-none text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className={cn(
+        "-mx-0.5 flex min-w-0 select-none items-center gap-1 overflow-x-auto px-0.5 text-[11px] leading-none text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        props.className,
+      )}
       data-chat-composer-status-strip="true"
     >
-      {props.traitItems.map((item) => (
-        <span
-          key={item.id}
-          title={`${item.title}: ${item.label}`}
-          data-chat-composer-trait-status={item.id}
-          className={cn(
-            "inline-flex h-7 shrink-0 items-center rounded-full px-2 font-medium",
-            item.active
-              ? "bg-muted/50 text-foreground/85"
-              : "bg-transparent text-muted-foreground/78",
-          )}
-        >
-          {item.label}
-        </span>
-      ))}
+      {props.traitItems.map((item) => {
+        const clickable = item.id === "fastMode";
+        const className = cn(
+          "inline-flex h-7 shrink-0 items-center rounded-full px-2 font-medium transition-colors",
+          item.active
+            ? "bg-muted/50 text-foreground/85"
+            : "bg-transparent text-muted-foreground/78",
+          clickable &&
+            "cursor-pointer hover:bg-muted/75 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40",
+        );
+        return clickable ? (
+          <button
+            key={item.id}
+            type="button"
+            title={`${item.title}: ${item.label}. Click to turn off.`}
+            data-chat-composer-trait-status={item.id}
+            className={className}
+            onClick={() => props.onTraitStatusClick(item)}
+          >
+            {item.label}
+          </button>
+        ) : (
+          <span
+            key={item.id}
+            title={`${item.title}: ${item.label}`}
+            data-chat-composer-trait-status={item.id}
+            className={className}
+          >
+            {item.label}
+          </span>
+        );
+      })}
       {showPlanMode ? (
         <span
           title="Plan mode"
@@ -601,6 +624,9 @@ export const ChatComposer = memo(
     );
     const setComposerDraftProviderSlashCommand = useComposerDraftStore(
       (store) => store.setProviderSlashCommand,
+    );
+    const setComposerDraftProviderModelOptions = useComposerDraftStore(
+      (store) => store.setProviderModelOptions,
     );
     const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
 
@@ -1107,6 +1133,39 @@ export const ChatComposer = memo(
           includePrimarySelect: false,
         }).filter((item) => item.id !== "agent"),
       [activeComposerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
+    );
+    const onTraitStatusClick = useCallback(
+      (item: ComposerTraitStatusItem) => {
+        if (item.id !== "fastMode") {
+          return;
+        }
+        const nextOptions = buildComposerBooleanTraitModelOptions({
+          provider: selectedProvider,
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: activeComposerModelOptions,
+          prompt,
+          traitId: "fastMode",
+          currentValue: false,
+        });
+        setComposerDraftProviderModelOptions(composerDraftTarget, selectedProvider, nextOptions, {
+          instanceId: selectedInstanceId,
+          model: selectedModel,
+          persistSticky: true,
+        });
+        scheduleComposerFocus();
+      },
+      [
+        activeComposerModelOptions,
+        composerDraftTarget,
+        prompt,
+        scheduleComposerFocus,
+        selectedInstanceId,
+        selectedModel,
+        selectedProvider,
+        selectedProviderModels,
+        setComposerDraftProviderModelOptions,
+      ],
     );
     const showFastModeToggle = useMemo(
       () =>
@@ -2590,7 +2649,12 @@ export const ChatComposer = memo(
                     modelOptions={activeComposerModelOptions}
                     prompt={prompt}
                   />
+                  <ComposerRuntimeModeDropdown
+                    runtimeMode={runtimeMode}
+                    onRuntimeModeChange={handleRuntimeModeChange}
+                  />
                   <ComposerFooterStatusStrip
+                    className="ml-auto"
                     traitItems={composerTraitStatusItems}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     interactionMode={interactionMode}
@@ -2598,10 +2662,7 @@ export const ChatComposer = memo(
                     planSidebarLabel={planSidebarLabel}
                     planSidebarOpen={planSidebarOpen}
                     onTogglePlanSidebar={togglePlanSidebar}
-                  />
-                  <ComposerRuntimeModeDropdown
-                    runtimeMode={runtimeMode}
-                    onRuntimeModeChange={handleRuntimeModeChange}
+                    onTraitStatusClick={onTraitStatusClick}
                   />
                 </div>
 

@@ -12,9 +12,46 @@ import {
   type CodexUsageLimitSnapshot,
   type CodexUsageWindowDescriptor,
 } from "../../lib/codexUsage";
-import { useProviderAccountUsageSnapshots } from "../../hooks/useCodexUsage";
-import { type ProviderUsageSnapshot } from "../../lib/providerUsage";
+import { useProviderUsageSnapshots } from "../../hooks/useCodexUsage";
+import {
+  hasProviderTokenUsageTotals,
+  type ProviderModelTokenUsage,
+  type ProviderTokenUsageTotals,
+  type ProviderUsageSnapshot,
+} from "../../lib/providerUsage";
+import { formatContextWindowTokens } from "../../lib/contextWindow";
 import { SettingsPageContainer } from "./settingsLayout";
+
+const tokenFormatter = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 0,
+});
+
+const costFormatter = new Intl.NumberFormat(undefined, {
+  currency: "USD",
+  maximumFractionDigits: 4,
+  minimumFractionDigits: 2,
+  style: "currency",
+});
+
+function formatTokenCount(value: number): string {
+  return tokenFormatter.format(Math.max(0, Math.round(value)));
+}
+
+function formatTokenUsageDescription(totals: ProviderTokenUsageTotals): string {
+  const parts = [
+    totals.inputTokens > 0 ? `${formatTokenCount(totals.inputTokens)} in` : null,
+    totals.cachedInputTokens > 0 ? `${formatTokenCount(totals.cachedInputTokens)} cached` : null,
+    totals.outputTokens > 0 ? `${formatTokenCount(totals.outputTokens)} out` : null,
+    totals.reasoningOutputTokens > 0
+      ? `${formatTokenCount(totals.reasoningOutputTokens)} reasoning`
+      : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "Turn usage reported by provider activity.";
+}
+
+function formatCost(value: number): string {
+  return value > 0 ? costFormatter.format(value) : "-";
+}
 
 function UsageProgress({ window }: { window: CodexUsageWindowDescriptor }) {
   const remainingPercent = getCodexUsageRemainingPercent(window.usage);
@@ -109,8 +146,87 @@ function UsageLimitRows({ limit }: { limit: CodexUsageLimitSnapshot }) {
   });
 }
 
+function UsageTokenRows({ snapshot }: { snapshot: ProviderUsageSnapshot }) {
+  if (!hasProviderTokenUsageTotals(snapshot.tokenUsage.totals)) {
+    return null;
+  }
+
+  const modelRows = snapshot.tokenUsage.models.slice(0, 3);
+  return (
+    <>
+      <CompactUsageRow
+        title="Total tokens"
+        description={formatTokenUsageDescription(snapshot.tokenUsage.totals)}
+        control={
+          <div className="text-right">
+            <div className="text-xs tabular-nums text-foreground">
+              {formatTokenCount(snapshot.tokenUsage.totals.totalTokens)}
+            </div>
+            <div className="text-[11px] tabular-nums text-muted-foreground">
+              {formatCost(snapshot.tokenUsage.totals.estimatedCostUsd)}
+            </div>
+          </div>
+        }
+      />
+      {modelRows.map((model: ProviderModelTokenUsage) => (
+        <CompactUsageRow
+          key={model.model}
+          title={model.model}
+          description={formatTokenUsageDescription(model.totals)}
+          control={
+            <span className="text-right text-xs tabular-nums text-muted-foreground">
+              {formatTokenCount(model.totals.totalTokens)}
+            </span>
+          }
+        />
+      ))}
+    </>
+  );
+}
+
+function UsageContextWindowRow({ snapshot }: { snapshot: ProviderUsageSnapshot }) {
+  const contextWindow = snapshot.contextWindow;
+  if (!contextWindow) {
+    return null;
+  }
+
+  const used = formatContextWindowTokens(contextWindow.usedTokens);
+  const max =
+    contextWindow.maxTokens !== null && contextWindow.maxTokens !== undefined
+      ? formatContextWindowTokens(contextWindow.maxTokens)
+      : null;
+  const usedPercentage =
+    contextWindow.usedPercentage !== null
+      ? `${Math.round(contextWindow.usedPercentage)}%`
+      : "Reported";
+
+  return (
+    <CompactUsageRow
+      title="Context window"
+      description={max ? `${used} of ${max} tokens in context` : `${used} tokens in context`}
+      control={
+        <div className="flex min-w-32 items-center justify-end gap-2">
+          {contextWindow.usedPercentage !== null ? (
+            <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+              <div
+                className="h-full rounded-full bg-foreground"
+                style={{ width: `${Math.min(100, contextWindow.usedPercentage)}%` }}
+              />
+            </div>
+          ) : null}
+          <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+            {usedPercentage}
+          </span>
+        </div>
+      }
+    />
+  );
+}
+
 function ProviderUsageSection({ snapshot }: { snapshot: ProviderUsageSnapshot }) {
   const limits = snapshot.accountUsage?.limits ?? [];
+  const hasTokenUsage = hasProviderTokenUsageTotals(snapshot.tokenUsage.totals);
+  const hasContextWindow = snapshot.contextWindow !== null;
 
   return (
     <CompactUsageSection
@@ -127,21 +243,24 @@ function ProviderUsageSection({ snapshot }: { snapshot: ProviderUsageSnapshot })
         />
       }
     >
-      {limits.length > 0 ? (
-        limits.map((limit) => <UsageLimitRows key={limit.key} limit={limit} />)
-      ) : (
+      {limits.map((limit) => (
+        <UsageLimitRows key={limit.key} limit={limit} />
+      ))}
+      <UsageContextWindowRow snapshot={snapshot} />
+      <UsageTokenRows snapshot={snapshot} />
+      {limits.length === 0 && !hasTokenUsage && !hasContextWindow ? (
         <CompactUsageRow
           title="No reported usage"
-          description="This provider has not reported account limits in this app session."
+          description="This provider has not reported account limits or token usage in this app session."
           control={<span className="text-xs text-muted-foreground">Waiting</span>}
         />
-      )}
+      ) : null}
     </CompactUsageSection>
   );
 }
 
 export function CodexUsageSettingsPanel() {
-  const providerUsage = useProviderAccountUsageSnapshots();
+  const providerUsage = useProviderUsageSnapshots();
 
   return (
     <SettingsPageContainer>

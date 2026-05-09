@@ -13,6 +13,7 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  ProviderForkThreadInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -50,6 +51,13 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  /**
+   * Fork an existing provider session into a new provider-backed thread.
+   */
+  readonly forkThread?: (
+    input: ProviderForkThreadInput,
+  ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
   /**
    * Steer an active provider turn without starting a new turn.

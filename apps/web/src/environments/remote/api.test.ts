@@ -87,6 +87,19 @@ describe("remote environment api", () => {
     });
   });
 
+  it("defaults bare local backend hosts to http", () => {
+    expect(
+      resolveRemotePairingTarget({
+        host: "localhost:3000",
+        pairingCode: "pairing-token",
+      }),
+    ).toEqual({
+      credential: "pairing-token",
+      httpBaseUrl: "http://localhost:3000/",
+      wsBaseUrl: "ws://localhost:3000/",
+    });
+  });
+
   it("bootstraps bearer auth against a remote backend", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

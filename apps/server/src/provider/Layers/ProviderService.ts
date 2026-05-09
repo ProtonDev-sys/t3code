@@ -13,6 +13,7 @@ import {
   ModelSelection,
   NonNegativeInt,
   ThreadId,
+  ProviderForkThreadInput,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -613,6 +614,76 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const forkThread: NonNullable<ProviderServiceShape["forkThread"]> = Effect.fn("forkThread")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.forkThread",
+        schema: ProviderForkThreadInput,
+        payload: rawInput,
+      });
+
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "fork-thread",
+        "provider.source_thread_id": input.sourceThreadId,
+        "provider.target_thread_id": input.targetThreadId,
+        "provider.runtime_mode": input.runtimeMode,
+      });
+
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.sourceThreadId,
+          operation: "ProviderService.forkThread",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        const adapterForkThread = routed.adapter.forkThread;
+        if (!adapterForkThread) {
+          return yield* toValidationError(
+            "ProviderService.forkThread",
+            `${routed.adapter.provider} does not support thread forking`,
+          );
+        }
+
+        const session = yield* adapterForkThread(input);
+        if (session.provider !== routed.adapter.provider) {
+          return yield* toValidationError(
+            "ProviderService.forkThread",
+            `Adapter/provider mismatch: expected '${routed.adapter.provider}', received '${session.provider}'.`,
+          );
+        }
+        const sessionWithInstance = {
+          ...session,
+          providerInstanceId: routed.instanceId,
+        };
+
+        yield* stopStaleSessionsForThread({
+          threadId: input.targetThreadId,
+          currentInstanceId: routed.instanceId,
+        });
+        yield* upsertSessionBinding(sessionWithInstance, input.targetThreadId, {
+          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+          lastRuntimeEvent: "provider.forkThread",
+          lastRuntimeEventAt: new Date().toISOString(),
+        });
+        yield* analytics.record("provider.thread.forked", {
+          provider: sessionWithInstance.provider,
+          runtimeMode: input.runtimeMode,
+          hasResumeCursor: sessionWithInstance.resumeCursor !== undefined,
+        });
+        return sessionWithInstance;
+      }).pipe(
+        withMetrics({
+          counter: providerSessionsTotal,
+          attributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "fork",
+            }),
+        }),
+      );
+    },
+  );
+
   const sendTurn: ProviderServiceShape["sendTurn"] = Effect.fn("sendTurn")(function* (rawInput) {
     const parsed = yield* decodeInputOrValidationError({
       operation: "ProviderService.sendTurn",
@@ -1125,6 +1196,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   return {
     startSession,
+    forkThread,
     sendTurn,
     steerTurn,
     interruptTurn,

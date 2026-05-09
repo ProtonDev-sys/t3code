@@ -64,6 +64,14 @@ export const ProviderSessionStartInput = Schema.Struct({
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
+export const ProviderForkThreadInput = Schema.Struct({
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: RuntimeMode,
+});
+export type ProviderForkThreadInput = typeof ProviderForkThreadInput.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   input: Schema.optional(

@@ -1,1 +1,1 @@
-{"desktop":{"identifier":"desktop","description":"Desktop shell capability for the main T3 Code window.","remote":{"urls":["http://127.0.0.1:*","http://localhost:*"]},"local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:default"]}}
+{"desktop":{"identifier":"desktop","description":"Desktop shell capability for the main T3 Code window.","remote":{"urls":["http://127.0.0.1:*","http://localhost:*"]},"local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:default","desktop-shell"]}}

@@ -1,4 +1,4 @@
-import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
+import { GitBranchIcon, GitPullRequestIcon, RefreshCwIcon, ShieldCheckIcon } from "lucide-react";
 import { Option } from "effect";
 import { type ReactNode } from "react";
 import type {
@@ -249,7 +249,11 @@ function SourceControlSectionSkeleton({
   readonly headerAction?: ReactNode;
 }) {
   return (
-    <SettingsSection title={title} headerAction={headerAction}>
+    <SettingsSection
+      title={title}
+      icon={<GitBranchIcon className="size-3.5" />}
+      headerAction={headerAction}
+    >
       {SOURCE_CONTROL_SKELETON_ROWS.map((row) => (
         <div key={row} className="border-t border-border/60 px-4 py-3.5 first:border-t-0 sm:px-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -290,7 +294,7 @@ function EmptySourceControlDiscovery({
   const hasError = error !== null;
 
   return (
-    <SettingsSection title="Server environment">
+    <SettingsSection title="Server environment" icon={<GitPullRequestIcon className="size-3.5" />}>
       <Empty className="min-h-88">
         <EmptyMedia variant="icon">
           <GitPullRequestIcon />
@@ -362,7 +366,11 @@ export function SourceControlSettingsPanel() {
       ) : hasDiscoveryItems ? (
         <>
           {result.versionControlSystems.length > 0 ? (
-            <SettingsSection title="Version Control" headerAction={scanButton}>
+            <SettingsSection
+              title="Version Control"
+              icon={<GitBranchIcon className="size-3.5" />}
+              headerAction={scanButton}
+            >
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item} />
               ))}
@@ -372,6 +380,7 @@ export function SourceControlSettingsPanel() {
           {result.sourceControlProviders.length > 0 ? (
             <SettingsSection
               title="Source Control Providers"
+              icon={<ShieldCheckIcon className="size-3.5" />}
               headerAction={result.versionControlSystems.length === 0 ? scanButton : null}
             >
               {result.sourceControlProviders.map((item) => (

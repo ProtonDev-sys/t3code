@@ -1,0 +1,28 @@
+[[permission]]
+identifier = "desktop-shell"
+description = "Allows the main T3 Code window to call desktop shell commands."
+commands.allow = [
+  "get_app_branding",
+  "get_local_environment_bootstrap",
+  "get_client_settings",
+  "set_client_settings",
+  "get_saved_environment_registry",
+  "set_saved_environment_registry",
+  "get_saved_environment_secret",
+  "set_saved_environment_secret",
+  "remove_saved_environment_secret",
+  "discover_ssh_hosts",
+  "ensure_ssh_environment",
+  "disconnect_ssh_environment",
+  "resolve_ssh_password_prompt",
+  "get_server_exposure_state",
+  "set_server_exposure_mode",
+  "set_tailscale_serve_enabled",
+  "get_advertised_endpoints",
+  "get_update_state",
+  "set_update_channel",
+  "check_for_update",
+  "download_update",
+  "install_update",
+  "set_theme",
+]

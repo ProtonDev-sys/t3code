@@ -196,6 +196,36 @@ describe("providerUsage", () => {
     ).toEqual(["Claude"]);
   });
 
+  it("keeps Copilot ACP usage updates visible as context-window telemetry", () => {
+    const copilot = ProviderDriverKind.make("copilot");
+    const snapshots = deriveProviderUsageSnapshots(
+      [
+        makeProvider({
+          driver: copilot,
+          instanceId: ProviderInstanceId.make("copilot"),
+          displayName: "Copilot",
+        }),
+      ],
+      [
+        makeActivity("activity-copilot-context", "context-window.updated", {
+          provider: copilot,
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          usedTokens: 12_345,
+          maxTokens: 200_000,
+        }),
+      ],
+    );
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.entry.displayName).toBe("Copilot");
+    expect(snapshots[0]?.contextWindow).toMatchObject({
+      usedTokens: 12_345,
+      maxTokens: 200_000,
+      remainingTokens: 187_655,
+    });
+    expect(hasReportedProviderTokenUsage(snapshots[0]!)).toBe(false);
+  });
+
   it("aggregates token usage by provider and model without double-counting context snapshots", () => {
     const codex = ProviderDriverKind.make("codex");
     const snapshots = deriveProviderUsageSnapshots(

@@ -60,6 +60,7 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import {
@@ -828,6 +829,24 @@ export function makeCursorAdapter<Settings = CursorSettings>(
                         turnId: ctx.activeTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         text: event.text,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    return;
+                  case "UsageUpdated":
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    yield* offerRuntimeEvent(
+                      makeAcpTokenUsageEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: provider,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        usage: event.usage,
                         rawPayload: event.rawPayload,
                       }),
                     );

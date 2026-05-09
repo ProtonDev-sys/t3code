@@ -593,7 +593,6 @@ describe("ProviderCommandReactor", () => {
         createdAt: completedAt,
       }),
     );
-
     await waitFor(async () => {
       const readModel = await Effect.runPromise(harness.engine.getReadModel());
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
@@ -621,7 +620,6 @@ describe("ProviderCommandReactor", () => {
         createdAt: new Date().toISOString(),
       }),
     );
-
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     await harness.drain();
     const readModel = await Effect.runPromise(harness.engine.getReadModel());

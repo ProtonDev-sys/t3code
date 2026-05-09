@@ -1,7 +1,9 @@
 import {
   ArchiveIcon,
   ArchiveX,
+  BotIcon,
   CalendarClockIcon,
+  CircleHelpIcon,
   DownloadIcon,
   LoaderIcon,
   PencilIcon,
@@ -9,6 +11,9 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
+  ServerIcon,
+  Settings2Icon,
+  SlidersHorizontalIcon,
   Trash2Icon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -150,7 +155,6 @@ const SETTINGS_INPUT_CLASS =
   "h-9 rounded-md border border-input bg-background px-3 text-sm outline-hidden transition-colors placeholder:text-muted-foreground/70 focus:border-ring focus:ring-2 focus:ring-ring/30";
 const SETTINGS_TEXTAREA_CLASS =
   "rounded-md border border-input bg-background px-3 py-2 text-sm outline-hidden transition-colors placeholder:text-muted-foreground/70 focus:border-ring focus:ring-2 focus:ring-ring/30";
-const SETTINGS_PROVIDER_DETAILS_STORAGE_KEY = "t3code.settings.providerDetailsOpen.v1";
 
 const EDITABLE_KEYBINDING_COMMANDS: ReadonlyArray<{
   readonly command: KeybindingCommand;
@@ -174,41 +178,6 @@ const EDITABLE_KEYBINDING_COMMANDS: ReadonlyArray<{
 const DEFAULT_KEYBINDING_WHEN_BY_COMMAND = new Map<KeybindingCommand, string | undefined>(
   DEFAULT_KEYBINDINGS.map((rule) => [rule.command, rule.when]),
 );
-
-function readPersistedProviderDetailsState(): Record<string, boolean> {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  try {
-    const raw = window.localStorage.getItem(SETTINGS_PROVIDER_DETAILS_STORAGE_KEY);
-    if (!raw) {
-      return {};
-    }
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, boolean] =>
-          typeof entry[0] === "string" && typeof entry[1] === "boolean",
-      ),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function persistProviderDetailsState(state: Record<string, boolean>): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(SETTINGS_PROVIDER_DETAILS_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Non-critical UI preference.
-  }
-}
 
 function withoutProviderInstanceKey<V>(
   record: Readonly<Record<ProviderInstanceId, V>> | undefined,
@@ -676,6 +645,7 @@ function CodexMcpConfigSection() {
   return (
     <SettingsSection
       title="Codex MCP Servers"
+      icon={<ServerIcon className="size-3.5" />}
       headerAction={
         <div className="flex items-center gap-1">
           <Button
@@ -1285,7 +1255,12 @@ function KeybindingsSettingsRows({
 }
 
 function formatAutomationSchedule(automation: CodexAutomationSummary): string {
-  return automation.rrule ?? "No schedule";
+  const rrule = automation.rrule?.trim() ?? "";
+  if (!rrule) {
+    return "Manual";
+  }
+  const presetLabel = labelForAutomationSchedule(rrule);
+  return presetLabel === "Custom" ? rrule : presetLabel;
 }
 
 type AutomationDraft = {
@@ -1349,6 +1324,66 @@ function splitAutomationCwds(value: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+const AUTOMATION_SCHEDULE_PRESETS = [
+  { value: "manual", label: "Manual", rrule: "" },
+  { value: "daily", label: "Daily", rrule: "FREQ=DAILY" },
+  { value: "weekdays", label: "Weekdays", rrule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" },
+  { value: "weekly", label: "Weekly", rrule: "FREQ=WEEKLY" },
+  { value: "monthly", label: "Monthly", rrule: "FREQ=MONTHLY" },
+] as const;
+
+const AUTOMATION_REASONING_EFFORT_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "none", label: "None" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+] as const;
+
+const AUTOMATION_ENVIRONMENT_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "local", label: "Local" },
+] as const;
+
+function automationSchedulePresetForRrule(rrule: string): string {
+  const normalized = rrule.trim();
+  if (!normalized) {
+    return "manual";
+  }
+  return (
+    AUTOMATION_SCHEDULE_PRESETS.find((preset) => preset.rrule === normalized)?.value ?? "custom"
+  );
+}
+
+function labelForAutomationSchedule(rrule: string): string {
+  const preset = AUTOMATION_SCHEDULE_PRESETS.find(
+    (candidate) => candidate.value === automationSchedulePresetForRrule(rrule),
+  );
+  return preset?.label ?? "Custom";
+}
+
+function automationEnvironmentSelectValue(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    return "default";
+  }
+  return AUTOMATION_ENVIRONMENT_OPTIONS.some((option) => option.value === normalized)
+    ? normalized
+    : "custom";
+}
+
+function automationReasoningEffortSelectValue(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    return "default";
+  }
+  return AUTOMATION_REASONING_EFFORT_OPTIONS.some((option) => option.value === normalized)
+    ? normalized
+    : "custom";
+}
+
 function CodexAutomationRow({
   automation,
   disabled,
@@ -1373,16 +1408,25 @@ function CodexAutomationRow({
       title={
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate">{automation.name}</span>
-          <Badge variant={automation.enabled ? "success" : "warning"} size="sm">
-            {automation.status.toLowerCase()}
-          </Badge>
         </span>
       }
-      description={formatAutomationSchedule(automation)}
+      description={automation.prompt?.trim() || formatAutomationSchedule(automation)}
       status={
-        <span className="block truncate font-mono text-[11px]">
-          {automation.id}
-          {meta.length > 0 ? ` · ${meta.join(" · ")}` : ""}
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Badge variant={automation.enabled ? "success" : "warning"} size="sm">
+            {automation.enabled ? "Enabled" : "Paused"}
+          </Badge>
+          <Badge variant="outline" size="sm">
+            {formatAutomationSchedule(automation)}
+          </Badge>
+          {meta.map((entry) => (
+            <Badge key={String(entry)} variant="secondary" size="sm">
+              {entry}
+            </Badge>
+          ))}
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/80">
+            {automation.id}
+          </span>
         </span>
       }
       control={
@@ -1644,11 +1688,11 @@ function CodexAutomationsSection() {
               {automationDraft?.originalId ? "Edit Automation" : "Create Automation"}
             </DialogTitle>
             <DialogDescription>
-              Write the same native Codex automation fields that are stored in automation.toml.
+              Schedule recurring Codex work with prompt, model, environment, and workspace presets.
             </DialogDescription>
           </DialogHeader>
           {automationDraft ? (
-            <DialogPanel className="grid gap-3">
+            <DialogPanel className="grid gap-4">
               <div className="grid gap-2 sm:grid-cols-2">
                 <input
                   value={automationDraft.name}
@@ -1664,7 +1708,7 @@ function CodexAutomationsSection() {
                         : current,
                     );
                   }}
-                  placeholder="Automation name"
+                  placeholder="Automation title"
                   spellCheck={false}
                   aria-label="Automation name"
                   className={SETTINGS_INPUT_CLASS}
@@ -1689,38 +1733,203 @@ function CodexAutomationsSection() {
                     current ? { ...current, prompt: event.currentTarget.value } : current,
                   )
                 }
-                placeholder="Prompt to run"
+                placeholder="Add prompt e.g. look for crashes in $sentry"
                 spellCheck={false}
                 aria-label="Automation prompt"
                 className={`min-h-32 ${SETTINGS_TEXTAREA_CLASS}`}
               />
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <Select
+                    value={automationSchedulePresetForRrule(automationDraft.rrule)}
+                    onValueChange={(rawValue) =>
+                      setAutomationDraft((current) => {
+                        if (!current) return current;
+                        const value = rawValue ?? "manual";
+                        if (value === "custom") {
+                          return {
+                            ...current,
+                            rrule: current.rrule.trim() || "FREQ=DAILY",
+                          };
+                        }
+                        const preset = AUTOMATION_SCHEDULE_PRESETS.find(
+                          (candidate) => candidate.value === value,
+                        );
+                        return preset ? { ...current, rrule: preset.rrule } : current;
+                      })
+                    }
+                  >
+                    <SelectTrigger aria-label="Automation schedule">
+                      <SelectValue>{labelForAutomationSchedule(automationDraft.rrule)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      {AUTOMATION_SCHEDULE_PRESETS.map((option) => (
+                        <SelectItem hideIndicator key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                      <SelectItem hideIndicator value="custom">
+                        Custom RRULE
+                      </SelectItem>
+                    </SelectPopup>
+                  </Select>
+                  <Select
+                    value={automationEnvironmentSelectValue(automationDraft.executionEnvironment)}
+                    onValueChange={(rawValue) =>
+                      setAutomationDraft((current) => {
+                        if (!current) return current;
+                        const value = rawValue ?? "default";
+                        if (value === "custom") {
+                          return {
+                            ...current,
+                            executionEnvironment: current.executionEnvironment.trim() || "local",
+                          };
+                        }
+                        return {
+                          ...current,
+                          executionEnvironment: value === "default" ? "" : value,
+                        };
+                      })
+                    }
+                  >
+                    <SelectTrigger aria-label="Automation execution environment">
+                      <SelectValue>
+                        {automationEnvironmentSelectValue(automationDraft.executionEnvironment) ===
+                        "custom"
+                          ? "Custom"
+                          : (AUTOMATION_ENVIRONMENT_OPTIONS.find(
+                              (option) =>
+                                option.value ===
+                                automationEnvironmentSelectValue(
+                                  automationDraft.executionEnvironment,
+                                ),
+                            )?.label ?? "Default")}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      {AUTOMATION_ENVIRONMENT_OPTIONS.map((option) => (
+                        <SelectItem hideIndicator key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                      <SelectItem hideIndicator value="custom">
+                        Custom
+                      </SelectItem>
+                    </SelectPopup>
+                  </Select>
+                  <Select
+                    value={automationReasoningEffortSelectValue(automationDraft.reasoningEffort)}
+                    onValueChange={(rawValue) =>
+                      setAutomationDraft((current) => {
+                        if (!current) return current;
+                        const value = rawValue ?? "default";
+                        if (value === "custom") {
+                          return {
+                            ...current,
+                            reasoningEffort: current.reasoningEffort.trim() || "medium",
+                          };
+                        }
+                        return {
+                          ...current,
+                          reasoningEffort: value === "default" ? "" : value,
+                        };
+                      })
+                    }
+                  >
+                    <SelectTrigger aria-label="Automation reasoning effort">
+                      <SelectValue>
+                        {automationReasoningEffortSelectValue(automationDraft.reasoningEffort) ===
+                        "custom"
+                          ? "Custom"
+                          : (AUTOMATION_REASONING_EFFORT_OPTIONS.find(
+                              (option) =>
+                                option.value ===
+                                automationReasoningEffortSelectValue(
+                                  automationDraft.reasoningEffort,
+                                ),
+                            )?.label ?? "Default")}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      {AUTOMATION_REASONING_EFFORT_OPTIONS.map((option) => (
+                        <SelectItem hideIndicator key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                      <SelectItem hideIndicator value="custom">
+                        Custom
+                      </SelectItem>
+                    </SelectPopup>
+                  </Select>
+                </div>
+                <label className="inline-flex h-9 items-center gap-2 text-xs text-muted-foreground">
+                  <Switch
+                    checked={automationDraft.enabled}
+                    onCheckedChange={(checked) =>
+                      setAutomationDraft((current) =>
+                        current ? { ...current, enabled: Boolean(checked) } : current,
+                      )
+                    }
+                    aria-label="Toggle automation"
+                  />
+                  Enabled
+                </label>
+              </div>
+              {automationSchedulePresetForRrule(automationDraft.rrule) === "custom" ||
+              automationEnvironmentSelectValue(automationDraft.executionEnvironment) === "custom" ||
+              automationReasoningEffortSelectValue(automationDraft.reasoningEffort) === "custom" ? (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {automationSchedulePresetForRrule(automationDraft.rrule) === "custom" ? (
+                    <input
+                      value={automationDraft.rrule}
+                      onChange={(event) =>
+                        setAutomationDraft((current) =>
+                          current ? { ...current, rrule: event.currentTarget.value } : current,
+                        )
+                      }
+                      placeholder="Custom RRULE"
+                      spellCheck={false}
+                      aria-label="Automation recurrence rule"
+                      className={SETTINGS_INPUT_CLASS}
+                    />
+                  ) : null}
+                  {automationEnvironmentSelectValue(automationDraft.executionEnvironment) ===
+                  "custom" ? (
+                    <input
+                      value={automationDraft.executionEnvironment}
+                      onChange={(event) =>
+                        setAutomationDraft((current) =>
+                          current
+                            ? { ...current, executionEnvironment: event.currentTarget.value }
+                            : current,
+                        )
+                      }
+                      placeholder="Execution environment"
+                      spellCheck={false}
+                      aria-label="Automation execution environment"
+                      className={SETTINGS_INPUT_CLASS}
+                    />
+                  ) : null}
+                  {automationReasoningEffortSelectValue(automationDraft.reasoningEffort) ===
+                  "custom" ? (
+                    <input
+                      value={automationDraft.reasoningEffort}
+                      onChange={(event) =>
+                        setAutomationDraft((current) =>
+                          current
+                            ? { ...current, reasoningEffort: event.currentTarget.value }
+                            : current,
+                        )
+                      }
+                      placeholder="Reasoning effort"
+                      spellCheck={false}
+                      aria-label="Automation reasoning effort"
+                      className={SETTINGS_INPUT_CLASS}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
-                <input
-                  value={automationDraft.rrule}
-                  onChange={(event) =>
-                    setAutomationDraft((current) =>
-                      current ? { ...current, rrule: event.currentTarget.value } : current,
-                    )
-                  }
-                  placeholder="Automation recurrence rule"
-                  spellCheck={false}
-                  aria-label="Automation recurrence rule"
-                  className={SETTINGS_INPUT_CLASS}
-                />
-                <input
-                  value={automationDraft.executionEnvironment}
-                  onChange={(event) =>
-                    setAutomationDraft((current) =>
-                      current
-                        ? { ...current, executionEnvironment: event.currentTarget.value }
-                        : current,
-                    )
-                  }
-                  placeholder="Execution environment"
-                  spellCheck={false}
-                  aria-label="Automation execution environment"
-                  className={SETTINGS_INPUT_CLASS}
-                />
                 <input
                   value={automationDraft.model}
                   onChange={(event) =>
@@ -1733,45 +1942,19 @@ function CodexAutomationsSection() {
                   aria-label="Automation model"
                   className={SETTINGS_INPUT_CLASS}
                 />
-                <input
-                  value={automationDraft.reasoningEffort}
+                <Textarea
+                  value={automationDraft.cwds}
                   onChange={(event) =>
                     setAutomationDraft((current) =>
-                      current
-                        ? { ...current, reasoningEffort: event.currentTarget.value }
-                        : current,
+                      current ? { ...current, cwds: event.currentTarget.value } : current,
                     )
                   }
-                  placeholder="Reasoning effort"
+                  placeholder="Working directories, one per line"
                   spellCheck={false}
-                  aria-label="Automation reasoning effort"
-                  className={SETTINGS_INPUT_CLASS}
+                  aria-label="Automation working directories"
+                  className={`min-h-20 ${SETTINGS_TEXTAREA_CLASS}`}
                 />
               </div>
-              <Textarea
-                value={automationDraft.cwds}
-                onChange={(event) =>
-                  setAutomationDraft((current) =>
-                    current ? { ...current, cwds: event.currentTarget.value } : current,
-                  )
-                }
-                placeholder="Working directories, one per line"
-                spellCheck={false}
-                aria-label="Automation working directories"
-                className={`min-h-20 ${SETTINGS_TEXTAREA_CLASS}`}
-              />
-              <label className="inline-flex h-8 items-center gap-2 text-xs text-muted-foreground">
-                <Switch
-                  checked={automationDraft.enabled}
-                  onCheckedChange={(checked) =>
-                    setAutomationDraft((current) =>
-                      current ? { ...current, enabled: Boolean(checked) } : current,
-                    )
-                  }
-                  aria-label="Toggle automation"
-                />
-                Enabled
-              </label>
             </DialogPanel>
           ) : null}
           <DialogFooter>
@@ -1952,9 +2135,7 @@ export function GeneralSettingsPanel({
   // (`defaultInstanceIdForDriver(driver)`), which is also `ProviderDriverKind` at
   // runtime, so a pre-existing open key for e.g. "codex" persists across
   // the legacy/unified render swap.
-  const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>(
-    readPersistedProviderDetailsState,
-  );
+  const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadShellsAcrossEnvironments));
@@ -2441,12 +2622,11 @@ export function GeneralSettingsPanel({
   const providerDetailMode = section === "agents" ? "agents" : "all";
   const providerRows =
     section === "agents" ? rows.filter((row) => row.driver === DEFAULT_DRIVER_KIND) : rows;
-  const shouldOpenProviderDetailsByDefault = section === "agents";
 
   return (
     <SettingsPageContainer>
       {showGeneralSettings ? (
-        <SettingsSection title="General">
+        <SettingsSection title="General" icon={<Settings2Icon className="size-3.5" />}>
           <SettingsRow
             title="Theme"
             description="Choose how T3 Code looks across the app."
@@ -2836,6 +3016,7 @@ export function GeneralSettingsPanel({
         <>
           <SettingsSection
             title={providerSectionTitle}
+            icon={<BotIcon className="size-3.5" />}
             headerAction={
               <div className="flex items-center gap-1.5">
                 <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
@@ -2908,17 +3089,13 @@ export function GeneralSettingsPanel({
                   instance={row.instance}
                   driverOption={driverOption}
                   liveProvider={liveProvider}
-                  isExpanded={
-                    openInstanceDetails[row.instanceId] ?? shouldOpenProviderDetailsByDefault
-                  }
+                  isExpanded={openInstanceDetails[row.instanceId] ?? false}
                   onExpandedChange={(open) =>
                     setOpenInstanceDetails((existing) => {
-                      const next = {
+                      return {
                         ...existing,
                         [row.instanceId]: open,
                       };
-                      persistProviderDetailsState(next);
-                      return next;
                     })
                   }
                   onUpdate={(next) => {
@@ -2977,7 +3154,7 @@ export function GeneralSettingsPanel({
       ) : null}
 
       {showAdvancedSettings ? (
-        <SettingsSection title="Advanced">
+        <SettingsSection title="Advanced" icon={<SlidersHorizontalIcon className="size-3.5" />}>
           <SettingsRow
             title="Clean inactive threads"
             description={`Delete threads not used for ${INACTIVE_THREAD_CLEANUP_DAYS}+ days from T3 Code.`}
@@ -3091,7 +3268,7 @@ export function GeneralSettingsPanel({
       ) : null}
 
       {showAboutSettings ? (
-        <SettingsSection title="About">
+        <SettingsSection title="About" icon={<CircleHelpIcon className="size-3.5" />}>
           {isDesktopShell ? (
             <AboutVersionSection />
           ) : (
@@ -3186,7 +3363,7 @@ export function ArchivedThreadsPanel() {
   return (
     <SettingsPageContainer>
       {archivedGroups.length === 0 ? (
-        <SettingsSection title="Archived threads">
+        <SettingsSection title="Archived threads" icon={<ArchiveIcon className="size-3.5" />}>
           <Empty className="min-h-88">
             <EmptyMedia variant="icon">
               <ArchiveIcon />

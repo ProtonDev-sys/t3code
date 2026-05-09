@@ -188,9 +188,7 @@ function readPayloadModel(payload: ProviderEvent["payload"]): string | undefined
   return typeof model === "string" ? trimText(model) : undefined;
 }
 
-function normalizeCodexServiceTier(
-  value: string | undefined,
-): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+function normalizeCodexServiceTier(value: string | undefined): string | undefined {
   switch (value) {
     case "fast":
     case "priority":
@@ -205,7 +203,7 @@ function normalizeCodexServiceTier(
 function readCodexServiceTierOption(
   modelSelection: ProviderSendTurnInput["modelSelection"],
   boundInstanceId: ProviderInstanceId,
-): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+): string | undefined {
   if (modelSelection?.instanceId !== boundInstanceId) {
     return undefined;
   }
@@ -1315,7 +1313,7 @@ function mapToRuntimeEvents(
         type: "thread.realtime.started",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          realtimeSessionId: payload.sessionId ?? undefined,
+          realtimeSessionId: payload.realtimeSessionId ?? undefined,
         },
       },
     ];
@@ -1618,6 +1616,36 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       }),
     );
 
+  const forkThread: NonNullable<CodexAdapterShape["forkThread"]> = Effect.fn("forkThread")(
+    function* (input) {
+      const sourceSession = yield* requireSession(input.sourceThreadId);
+      const serviceTier = readCodexServiceTierOption(input.modelSelection, boundInstanceId);
+      const forked = yield* sourceSession.runtime
+        .forkThread({
+          runtimeMode: input.runtimeMode,
+          ...(input.modelSelection?.instanceId === boundInstanceId
+            ? { model: input.modelSelection.model }
+            : {}),
+          ...(serviceTier ? { serviceTier } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            mapCodexRuntimeError(input.sourceThreadId, "thread/fork", cause),
+          ),
+        );
+
+      return yield* startSession({
+        threadId: input.targetThreadId,
+        provider: PROVIDER,
+        providerInstanceId: boundInstanceId,
+        cwd: forked.cwd,
+        ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+        resumeCursor: { threadId: forked.providerThreadId },
+        runtimeMode: input.runtimeMode,
+      });
+    },
+  );
+
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
     input: Pick<ProviderSendTurnInput | ProviderSteerTurnInput, "threadId">,
     attachment: NonNullable<
@@ -1909,6 +1937,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       sessionModelSwitch: "in-session",
     },
     startSession,
+    forkThread,
     sendTurn,
     steerTurn,
     interruptTurn,

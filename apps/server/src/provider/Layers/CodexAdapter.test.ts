@@ -33,11 +33,13 @@ import { parseCodexProviderSlashCommand } from "./CodexSlashCommands.ts";
 import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeGoalCommandInput,
+  type CodexSessionRuntimeForkInput,
   type CodexSessionRuntimeRenameInput,
   type CodexSessionRuntimeReviewInput,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeSteerTurnInput,
   type CodexSessionRuntimeShape,
+  type CodexThreadForkResult,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
@@ -117,6 +119,19 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
+  public readonly forkThreadImpl = vi.fn(
+    (_input: CodexSessionRuntimeForkInput): Promise<CodexThreadForkResult> =>
+      Promise.resolve({
+        providerThreadId: "provider-thread-fork-1",
+        cwd: this.options.cwd,
+        model: this.options.model ?? "gpt-5",
+        snapshot: {
+          threadId: "provider-thread-fork-1",
+          turns: [],
+        },
+      }),
+  );
+
   public readonly interruptTurnImpl = vi.fn(
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
@@ -183,6 +198,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   renameThread(input: CodexSessionRuntimeRenameInput) {
     return Effect.promise(() => this.renameThreadImpl(input));
+  }
+
+  forkThread(input: CodexSessionRuntimeForkInput) {
+    return Effect.promise(() => this.forkThreadImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -821,6 +840,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         payload: {
           threadId: "thread-1",
           turnId: "turn-1",
+          completedAtMs: Date.now(),
           item: {
             type: "agentMessage",
             id: "msg_1",
@@ -863,6 +883,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         payload: {
           threadId: "thread-1",
           turnId: "turn-1",
+          completedAtMs: Date.now(),
           item: {
             type: "plan",
             id: "plan_1",

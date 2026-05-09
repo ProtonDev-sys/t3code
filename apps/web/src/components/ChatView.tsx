@@ -108,7 +108,13 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon, LoaderIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  GitBranchPlusIcon,
+  LoaderIcon,
+  TriangleAlertIcon,
+  WifiOffIcon,
+} from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -3932,6 +3938,65 @@ export default function ChatView(props: ChatViewProps) {
     composerRef,
   ]);
 
+  const onForkThread = useCallback(async () => {
+    const api = readEnvironmentApi(environmentId);
+    if (
+      !api ||
+      !activeThread ||
+      !isServerThread ||
+      isConnecting ||
+      activeEnvironmentUnavailable ||
+      phase === "running"
+    ) {
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const nextThreadId = newThreadId();
+    const nextTitle = truncate(`${activeThread.title} (fork)`);
+
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.fork",
+        commandId: newCommandId(),
+        sourceThreadId: activeThread.id,
+        threadId: nextThreadId,
+        title: nextTitle,
+        createdAt,
+      });
+      await waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId));
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: activeThread.environmentId,
+          threadId: nextThreadId,
+        },
+      });
+      toastManager.add({
+        type: "success",
+        title: "Thread forked",
+        description: nextTitle,
+      });
+    } catch (err) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not fork thread",
+          description:
+            err instanceof Error ? err.message : "An error occurred while creating the fork.",
+        }),
+      );
+    }
+  }, [
+    activeEnvironmentUnavailable,
+    activeThread,
+    environmentId,
+    isConnecting,
+    isServerThread,
+    navigate,
+    phase,
+  ]);
+
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
@@ -4080,11 +4145,11 @@ export default function ChatView(props: ChatViewProps) {
           "border-b border-border",
           isDesktopShell
             ? cn(
-                "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
+                "drag-region flex h-[52px] items-center px-4 wco:h-[env(titlebar-area-height)]",
                 reserveTitleBarControlInset &&
                   "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
               )
-            : "pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-2 sm:pb-3 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-3",
+            : "py-2 pl-[calc(env(safe-area-inset-left)+1rem)] pr-[calc(env(safe-area-inset-right)+1rem)] sm:py-3",
         )}
       >
         <ChatHeader
@@ -4182,6 +4247,23 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative isolate">
               <ComposerBannerStack className="relative z-30" items={composerBannerItems} />
               <div className="relative z-10">
+                {isServerThread ? (
+                  <div className="mb-1 flex justify-end">
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1.5 px-2 text-muted-foreground hover:text-foreground"
+                      disabled={
+                        isConnecting || Boolean(activeEnvironmentUnavailable) || phase === "running"
+                      }
+                      onClick={() => void onForkThread()}
+                    >
+                      <GitBranchPlusIcon className="size-3.5" />
+                      Fork thread
+                    </Button>
+                  </div>
+                ) : null}
                 <ChatComposer
                   ref={composerRef}
                   composerDraftTarget={composerDraftTarget}

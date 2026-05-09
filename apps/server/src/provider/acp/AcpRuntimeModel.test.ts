@@ -245,6 +245,43 @@ describe("AcpRuntimeModel", () => {
     ]);
   });
 
+  it("projects ACP usage updates into token usage snapshots", () => {
+    const result = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 12_345,
+        size: 200_000,
+        cost: {
+          amount: 0.42,
+          currency: "USD",
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(result.events).toEqual([
+      {
+        _tag: "UsageUpdated",
+        usage: {
+          usedTokens: 12_345,
+          maxTokens: 200_000,
+        },
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "usage_update",
+            used: 12_345,
+            size: 200_000,
+            cost: {
+              amount: 0.42,
+              currency: "USD",
+            },
+          },
+        },
+      },
+    ]);
+  });
+
   it("keeps permission request parsing compatible with loose extension payloads", () => {
     const request = parsePermissionRequest({
       sessionId: "session-1",

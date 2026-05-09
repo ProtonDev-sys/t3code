@@ -99,7 +99,7 @@ function shouldAssistantMessageCompleteLatestTurn(
   if (streaming) {
     return false;
   }
-  return !(thread.session?.status === "running" && thread.session.activeTurnId === turnId);
+  return shouldApplyTurnUpdate(thread, turnId);
 }
 
 function latestTurnFromSessionSet(
@@ -366,7 +366,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             archivedAt: null,
             deletedAt: null,
-            messages: [],
+            messages: (payload.copiedMessages ?? []).slice(-MAX_THREAD_MESSAGES),
             activities: [],
             checkpoints: [],
             session: null,

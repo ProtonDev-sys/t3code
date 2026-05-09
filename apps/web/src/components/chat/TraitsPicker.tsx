@@ -258,7 +258,7 @@ function statusLabelForDescriptor(input: {
       return null;
     }
     if (descriptor.id === "fastMode") {
-      return { label: "Fast", active: true };
+      return { label: "FAST", active: true };
     }
     return { label: descriptor.label, active: true };
   }
@@ -318,6 +318,26 @@ export function hasComposerFastModeControl(input: {
   allowPromptInjectedEffort?: boolean;
 }): boolean {
   return getTraitsSectionVisibility(input).fastModeDescriptor !== null;
+}
+
+export function buildComposerBooleanTraitModelOptions(input: {
+  provider: ProviderDriverKind;
+  models: ReadonlyArray<ServerProviderModel>;
+  model: string | null | undefined;
+  prompt: string;
+  modelOptions: ProviderOptions | null | undefined;
+  traitId: string;
+  currentValue: boolean;
+  allowPromptInjectedEffort?: boolean;
+}): ProviderOptions | undefined {
+  const { descriptors, booleanDescriptors } = getTraitsSectionVisibility(input);
+  const descriptor = booleanDescriptors.find((candidate) => candidate.id === input.traitId);
+  if (!descriptor) {
+    return input.modelOptions ?? undefined;
+  }
+  return buildProviderOptionSelectionsFromDescriptors(
+    replaceDescriptorCurrentValue(descriptors, descriptor.id, input.currentValue),
+  );
 }
 
 export interface TraitsMenuContentProps {

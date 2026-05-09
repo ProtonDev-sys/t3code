@@ -72,7 +72,8 @@ const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
-  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number]
+  | EffectCodexSchema.V2ThreadForkResponse["thread"]["turns"][number]["items"][number];
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -83,7 +84,7 @@ export interface CodexSessionRuntimeOptions {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
-  readonly serviceTier?: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly serviceTier?: string | undefined;
   readonly modelContextWindow?: number;
   readonly mcpEnabled?: boolean;
   readonly resumeCursor?: CodexResumeCursor;
@@ -96,7 +97,7 @@ export interface CodexSessionRuntimeSendTurnInput {
     readonly url: string;
   }>;
   readonly model?: string;
-  readonly serviceTier?: EffectCodexSchema.V2TurnStartParams__ServiceTier | undefined;
+  readonly serviceTier?: string | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
   readonly interactionMode?: ProviderInteractionMode;
 }
@@ -131,6 +132,13 @@ export interface CodexSessionRuntimeRenameInput {
   readonly name: string;
 }
 
+export interface CodexSessionRuntimeForkInput {
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly runtimeMode?: RuntimeMode;
+  readonly serviceTier?: string | undefined;
+}
+
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
@@ -141,15 +149,21 @@ export interface CodexThreadSnapshot {
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
 }
 
+export interface CodexThreadForkResult {
+  readonly providerThreadId: string;
+  readonly cwd: string;
+  readonly model: string;
+  readonly serviceTier?: string | undefined;
+  readonly snapshot: CodexThreadSnapshot;
+}
+
 const CODEX_GOAL_PROTOCOL = [
   "Keep this goal active across turns until it is actually complete.",
   "Do not present the goal as complete unless all requested work is done.",
   "When you stop, state whether the goal is complete. If it is incomplete, list the remaining work clearly.",
 ].join("\n");
 
-function normalizeCodexServiceTier(
-  value: unknown,
-): EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined {
+function normalizeCodexServiceTier(value: unknown): string | undefined {
   switch (value) {
     case "fast":
     case "priority":
@@ -204,6 +218,9 @@ export interface CodexSessionRuntimeShape {
   readonly renameThread: (
     input: CodexSessionRuntimeRenameInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly forkThread: (
+    input: CodexSessionRuntimeForkInput,
+  ) => Effect.Effect<CodexThreadForkResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -357,7 +374,7 @@ function buildThreadStartParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
-  readonly serviceTier: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly serviceTier: string | undefined;
   readonly modelContextWindow: number | undefined;
   readonly mcpEnabled: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
@@ -428,7 +445,7 @@ export function buildTurnStartParams(input: {
     readonly url: string;
   }>;
   readonly model?: string;
-  readonly serviceTier?: EffectCodexSchema.V2TurnStartParams__ServiceTier;
+  readonly serviceTier?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
 }): Effect.Effect<
@@ -547,7 +564,7 @@ export const openCodexThread = (input: {
   readonly runtimeMode: RuntimeMode;
   readonly cwd: string;
   readonly requestedModel: string | undefined;
-  readonly serviceTier: EffectCodexSchema.V2ThreadStartParams__ServiceTier | undefined;
+  readonly serviceTier: string | undefined;
   readonly modelContextWindow: number | undefined;
   readonly mcpEnabled: boolean;
   readonly resumeThreadId: string | undefined;
@@ -813,7 +830,10 @@ function updateSession(
 }
 
 function parseThreadSnapshot(
-  response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
+  response:
+    | EffectCodexSchema.V2ThreadReadResponse
+    | EffectCodexSchema.V2ThreadRollbackResponse
+    | EffectCodexSchema.V2ThreadForkResponse,
 ): CodexThreadSnapshot {
   return {
     threadId: response.thread.id,
@@ -1705,6 +1725,39 @@ export const makeCodexSessionRuntime = (
           const turnId = TurnId.make(`rename-${yield* Random.nextUUIDv4}`);
           yield* emitSyntheticCommandTurn(providerThreadId, turnId);
           return yield* buildTurnStartResult(turnId);
+        }),
+      forkThread: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const session = yield* Ref.get(sessionRef);
+          const normalizedModel = normalizeCodexModelSlug(input.model ?? session.model);
+          const startParams = buildThreadStartParams({
+            cwd: input.cwd ?? session.cwd ?? options.cwd,
+            runtimeMode: input.runtimeMode ?? options.runtimeMode,
+            model: normalizedModel,
+            serviceTier: input.serviceTier ?? options.serviceTier,
+            modelContextWindow: options.modelContextWindow,
+            mcpEnabled: options.mcpEnabled ?? true,
+          });
+          const response = yield* client.request("thread/fork", {
+            threadId: providerThreadId,
+            ...(startParams.approvalPolicy ? { approvalPolicy: startParams.approvalPolicy } : {}),
+            ...(startParams.config ? { config: startParams.config } : {}),
+            ...(startParams.cwd ? { cwd: startParams.cwd } : {}),
+            ...(startParams.model ? { model: startParams.model } : {}),
+            ...(startParams.sandbox ? { sandbox: startParams.sandbox } : {}),
+            ...(startParams.serviceTier ? { serviceTier: startParams.serviceTier } : {}),
+            threadSource: "user",
+          });
+          return {
+            providerThreadId: response.thread.id,
+            cwd: response.cwd,
+            model: response.model,
+            ...(normalizeCodexServiceTier(response.serviceTier ?? undefined)
+              ? { serviceTier: normalizeCodexServiceTier(response.serviceTier ?? undefined) }
+              : {}),
+            snapshot: parseThreadSnapshot(response),
+          };
         }),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {

@@ -233,6 +233,62 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.fork": {
+      const sourceThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.sourceThreadId,
+      });
+      yield* requireThreadAbsent({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const title = command.title ?? `${sourceThread.title} (fork)`;
+      const copiedMessages = sourceThread.messages.map((message) => ({
+        ...message,
+        streaming: false,
+      }));
+      const base = withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt: command.createdAt,
+        commandId: command.commandId,
+      });
+      return [
+        {
+          ...base,
+          type: "thread.created",
+          payload: {
+            threadId: command.threadId,
+            projectId: sourceThread.projectId,
+            title,
+            modelSelection: sourceThread.modelSelection,
+            runtimeMode: sourceThread.runtimeMode,
+            interactionMode: sourceThread.interactionMode,
+            branch: sourceThread.branch,
+            worktreePath: sourceThread.worktreePath,
+            forkedFromThreadId: sourceThread.id,
+            copiedMessages,
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+          },
+        },
+        {
+          ...base,
+          eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
+          type: "thread.fork-requested",
+          payload: {
+            threadId: command.threadId,
+            sourceThreadId: sourceThread.id,
+            modelSelection: sourceThread.modelSelection,
+            runtimeMode: sourceThread.runtimeMode,
+            createdAt: command.createdAt,
+          },
+        },
+      ];
+    }
+
     case "thread.delete": {
       yield* requireThread({
         readModel,
@@ -436,6 +492,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.message.messageId,
+          message: command.message,
+          latestTurn: targetThread.latestTurn,
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
