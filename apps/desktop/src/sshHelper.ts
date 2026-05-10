@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import type { SshPasswordRequest } from "@t3tools/ssh/auth";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
+import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import {
   DesktopSshEnvironmentManager,
@@ -96,7 +97,10 @@ function resolveCliRunner(): RemoteT3RunnerOptions {
   const devRemoteEntryPath = process.env.T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH?.trim() ?? "";
   const isDevelopment = process.env.T3CODE_DESKTOP_IS_DEV === "1";
   if (isDevelopment && devRemoteEntryPath.length > 0) {
-    return { nodeScriptPath: devRemoteEntryPath };
+    return {
+      nodeScriptPath: devRemoteEntryPath,
+      nodeEngineRange: serverPackageJson.engines.node,
+    };
   }
 
   return {
@@ -105,6 +109,7 @@ function resolveCliRunner(): RemoteT3RunnerOptions {
       updateChannel: process.env.T3CODE_DESKTOP_UPDATE_CHANNEL === "nightly" ? "nightly" : "latest",
       isDevelopment,
     }),
+    nodeEngineRange: serverPackageJson.engines.node,
   };
 }
 

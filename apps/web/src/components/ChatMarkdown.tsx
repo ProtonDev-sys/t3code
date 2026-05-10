@@ -18,7 +18,9 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { ServerProviderSkill } from "@t3tools/contracts";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
+import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
@@ -55,8 +57,10 @@ interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
   isStreaming?: boolean;
+  skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
 }
 
+const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
@@ -502,7 +506,12 @@ function areMarkdownFileLinkPropsEqual(
   );
 }
 
-function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
+function ChatMarkdown({
+  text,
+  cwd,
+  isStreaming = false,
+  skills = EMPTY_MARKDOWN_SKILLS,
+}: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownFileLinkMetaByHref = useMemo(() => {
@@ -529,6 +538,12 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
   }, []);
   const markdownComponents = useMemo<Components>(
     () => ({
+      p({ node: _node, children, ...props }) {
+        return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+      },
+      li({ node: _node, children, ...props }) {
+        return <li {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</li>;
+      },
       a({ node: _node, href, ...props }) {
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
         const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
@@ -587,6 +602,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
       isStreaming,
       markdownFileLinkMetaByHref,
       resolvedTheme,
+      skills,
     ],
   );
 

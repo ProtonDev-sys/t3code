@@ -2519,7 +2519,7 @@ export const ChatComposer = memo(
                                 }`
                               : phase === "disconnected"
                                 ? "Ask for follow-up changes or attach images"
-                                : "Ask anything, @ files, / commands"
+                                : "Ask anything, @ files, $use skills, / commands"
                   }
                   disabled={
                     isConnecting ||

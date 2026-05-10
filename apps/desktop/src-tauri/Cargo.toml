@@ -1,6 +1,6 @@
 [package]
 name = "t3code-desktop"
-version = "0.0.25"
+version = "0.0.26"
 description = "T3 Code desktop shell"
 authors = ["T3 Tools"]
 license = "MIT"

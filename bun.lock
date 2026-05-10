@@ -5,16 +5,18 @@
     "": {
       "name": "@t3tools/monorepo",
       "devDependencies": {
+        "@effect/language-service": "catalog:",
         "@types/node": "catalog:",
         "oxfmt": "^0.40.0",
         "oxlint": "^1.55.0",
         "turbo": "^2.3.3",
+        "typescript": "catalog:",
         "vitest": "catalog:",
       },
     },
     "apps/desktop": {
       "name": "@t3tools/desktop",
-      "version": "0.0.22",
+      "version": "0.0.26",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -48,7 +50,7 @@
     },
     "apps/server": {
       "name": "t3",
-      "version": "0.0.22",
+      "version": "0.0.26",
       "bin": {
         "t3": "./dist/bin.mjs",
       },
@@ -81,7 +83,7 @@
     },
     "apps/web": {
       "name": "@t3tools/web",
-      "version": "0.0.22",
+      "version": "0.0.26",
       "dependencies": {
         "@base-ui/react": "^1.2.0",
         "@dnd-kit/core": "^6.3.1",
@@ -150,7 +152,7 @@
     },
     "packages/contracts": {
       "name": "@t3tools/contracts",
-      "version": "0.0.22",
+      "version": "0.0.26",
       "dependencies": {
         "effect": "catalog:",
       },

@@ -49,6 +49,8 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
   },
 };
 
+const DEFAULT_GITHUB_UPDATE_REPOSITORY = "ProtonDev-sys/t3code";
+
 interface BuildCliInput {
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
   readonly target: Option.Option<string>;
@@ -104,8 +106,14 @@ const BuildEnvConfig = Config.all({
   mockUpdates: Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   updaterPubkey: Config.string("T3CODE_TAURI_UPDATER_PUBKEY").pipe(Config.option),
-  updaterFallbackPubkey: Config.string("TAURI_SIGNING_PUBLIC_KEY").pipe(Config.option),
+  updaterDesktopPubkey: Config.string("T3CODE_DESKTOP_UPDATER_PUBKEY").pipe(Config.option),
+  updaterLegacyPubkey: Config.string("TAURI_UPDATER_PUBKEY").pipe(Config.option),
+  updaterSigningPubkey: Config.string("TAURI_SIGNING_PUBLIC_KEY").pipe(Config.option),
   updaterEndpoints: Config.string("T3CODE_TAURI_UPDATER_ENDPOINTS").pipe(Config.option),
+  updaterDesktopEndpoints: Config.string("T3CODE_DESKTOP_UPDATER_ENDPOINTS").pipe(Config.option),
+  updaterLegacyEndpoints: Config.string("TAURI_UPDATER_ENDPOINTS").pipe(Config.option),
+  updaterRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
+  updaterFallbackRepository: Config.string("GITHUB_REPOSITORY").pipe(Config.option),
   createUpdaterArtifacts: Config.boolean("T3CODE_TAURI_CREATE_UPDATER_ARTIFACTS").pipe(
     Config.withDefault(false),
   ),
@@ -171,14 +179,53 @@ function splitCsv(rawValue: string | undefined): readonly string[] {
     .filter((value) => value.length > 0);
 }
 
+function normalizeGitHubRepository(value: string | undefined): string | undefined {
+  const trimmed = value
+    ?.trim()
+    .replace(/^https:\/\/github\.com\//, "")
+    .replace(/\.git$/, "");
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const [owner, repo] = trimmed.split("/");
+  if (!owner || !repo) {
+    return undefined;
+  }
+
+  return `${owner}/${repo}`;
+}
+
+export function resolveGitHubUpdaterEndpoint(input: {
+  readonly channel: "latest" | "nightly";
+  readonly repository?: string | undefined;
+}): string {
+  const repository =
+    normalizeGitHubRepository(input.repository) ?? DEFAULT_GITHUB_UPDATE_REPOSITORY;
+  return input.channel === "nightly"
+    ? `https://github.com/${repository}/releases/download/nightly/nightly.json`
+    : `https://github.com/${repository}/releases/latest/download/latest.json`;
+}
+
 function resolveUpdaterEndpointConfig(input: {
   readonly configuredEndpoints: string | undefined;
+  readonly defaultRepository: string | undefined;
+  readonly enableDefaultGitHubEndpoints: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
+  readonly version: string;
 }): readonly string[] {
   const endpoints = [...splitCsv(input.configuredEndpoints)];
   if (input.mockUpdates) {
     endpoints.unshift(`${resolveMockUpdateServerUrl(input.mockUpdateServerPort)}/latest.json`);
+  }
+  if (endpoints.length === 0 && input.enableDefaultGitHubEndpoints) {
+    endpoints.push(
+      resolveGitHubUpdaterEndpoint({
+        channel: resolveDesktopUpdateChannel(input.version),
+        repository: input.defaultRepository,
+      }),
+    );
   }
   return endpoints;
 }
@@ -311,6 +358,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
   const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
   const version = mergeOptions(input.buildVersion, env.version, undefined);
+  const appVersion = version ?? serverPackageJson.version;
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
   const outputDir = path.resolve(
     repoRoot,
@@ -328,11 +376,23 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
       ),
     ));
   const updaterPubkey =
-    Option.getOrUndefined(env.updaterPubkey) ?? Option.getOrUndefined(env.updaterFallbackPubkey);
+    Option.getOrUndefined(env.updaterPubkey) ??
+    Option.getOrUndefined(env.updaterDesktopPubkey) ??
+    Option.getOrUndefined(env.updaterLegacyPubkey) ??
+    Option.getOrUndefined(env.updaterSigningPubkey);
   const updaterEndpoints = resolveUpdaterEndpointConfig({
-    configuredEndpoints: Option.getOrUndefined(env.updaterEndpoints),
+    configuredEndpoints:
+      Option.getOrUndefined(env.updaterEndpoints) ??
+      Option.getOrUndefined(env.updaterDesktopEndpoints) ??
+      Option.getOrUndefined(env.updaterLegacyEndpoints),
+    defaultRepository:
+      Option.getOrUndefined(env.updaterRepository)?.trim() ||
+      Option.getOrUndefined(env.updaterFallbackRepository)?.trim() ||
+      DEFAULT_GITHUB_UPDATE_REPOSITORY,
+    enableDefaultGitHubEndpoints: Boolean(updaterPubkey),
     mockUpdates,
     mockUpdateServerPort,
+    version: appVersion,
   });
 
   return {

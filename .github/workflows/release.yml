@@ -262,7 +262,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
-          T3CODE_TAURI_UPDATER_ENDPOINTS: ${{ vars.T3CODE_TAURI_UPDATER_ENDPOINTS }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          T3CODE_TAURI_UPDATER_ENDPOINTS: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY != '' && (needs.preflight.outputs.release_channel == 'nightly' && format('https://github.com/{0}/releases/download/nightly/nightly.json', github.repository) || format('https://github.com/{0}/releases/latest/download/latest.json', github.repository)) || '' }}
+          T3CODE_TAURI_UPDATER_ASSET_BASE_URL: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY != '' && (needs.preflight.outputs.release_channel == 'nightly' && format('https://github.com/{0}/releases/download/nightly/', github.repository) || format('https://github.com/{0}/releases/latest/download/', github.repository)) || '' }}
         run: |
           args=(
             --platform "${{ matrix.platform }}"
@@ -468,6 +470,43 @@ jobs:
             release-assets/*.sig
             release-assets/*.json
           fail_on_unmatched_files: true
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Clear nightly updater channel assets
+        if: needs.preflight.outputs.release_channel == 'nightly'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          if ! gh release view nightly >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh release view nightly --json assets --jq '.assets[].name' | while read -r asset_name; do
+            if [[ -n "$asset_name" ]]; then
+              gh release delete-asset nightly "$asset_name" --yes
+            fi
+          done
+
+      - name: Publish nightly updater channel
+        if: needs.preflight.outputs.release_channel == 'nightly'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          target_commitish: ${{ needs.preflight.outputs.ref }}
+          name: T3 Code Nightly Channel
+          body: |
+            Moving updater channel for the latest nightly build.
+          prerelease: true
+          make_latest: false
+          files: |
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/*.AppImage
+            release-assets/*.exe
+            release-assets/*.sig
+            release-assets/*.json
+          fail_on_unmatched_files: true
+          overwrite_files: true
           token: ${{ steps.app_token.outputs.token }}
 
   finalize:

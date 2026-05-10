@@ -9,6 +9,7 @@ import {
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
+  resolveGitHubUpdaterEndpoint,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
 } from "./build-desktop-artifact.ts";
@@ -18,6 +19,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
+  });
+
+  it("resolves fork-owned GitHub updater endpoints for both channels", () => {
+    assert.equal(
+      resolveGitHubUpdaterEndpoint({
+        channel: "latest",
+        repository: "ProtonDev-sys/t3code",
+      }),
+      "https://github.com/ProtonDev-sys/t3code/releases/latest/download/latest.json",
+    );
+
+    assert.equal(
+      resolveGitHubUpdaterEndpoint({
+        channel: "nightly",
+        repository: "https://github.com/ProtonDev-sys/t3code.git",
+      }),
+      "https://github.com/ProtonDev-sys/t3code/releases/download/nightly/nightly.json",
+    );
   });
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
@@ -96,6 +115,134 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const exit = yield* Effect.exit(resolveMockUpdateServerPort(port));
         assert.equal(exit._tag, "Failure");
       }
+    }),
+  );
+
+  it.effect("defaults signed updater builds to GitHub release feeds", () =>
+    Effect.gen(function* () {
+      const stable = yield* resolveBuildOptions({
+        platform: Option.some("win"),
+        target: Option.some("nsis"),
+        arch: Option.some("x64"),
+        buildVersion: Option.some("0.0.26"),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.some(false),
+        keepStage: Option.some(false),
+        signed: Option.some(false),
+        verbose: Option.some(false),
+        mockUpdates: Option.some(false),
+        mockUpdateServerPort: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "ProtonDev-sys/t3code",
+                TAURI_SIGNING_PUBLIC_KEY: "public-key",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(stable.updaterEndpoints, [
+        "https://github.com/ProtonDev-sys/t3code/releases/latest/download/latest.json",
+      ]);
+
+      const nightly = yield* resolveBuildOptions({
+        platform: Option.some("win"),
+        target: Option.some("nsis"),
+        arch: Option.some("x64"),
+        buildVersion: Option.some("0.0.27-nightly.20260510.1"),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.some(false),
+        keepStage: Option.some(false),
+        signed: Option.some(false),
+        verbose: Option.some(false),
+        mockUpdates: Option.some(false),
+        mockUpdateServerPort: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "ProtonDev-sys/t3code",
+                TAURI_SIGNING_PUBLIC_KEY: "public-key",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(nightly.updaterEndpoints, [
+        "https://github.com/ProtonDev-sys/t3code/releases/download/nightly/nightly.json",
+      ]);
+    }),
+  );
+
+  it.effect("preserves explicit updater endpoints over GitHub defaults", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("win"),
+        target: Option.some("nsis"),
+        arch: Option.some("x64"),
+        buildVersion: Option.some("0.0.27-nightly.20260510.1"),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.some(false),
+        keepStage: Option.some(false),
+        signed: Option.some(false),
+        verbose: Option.some(false),
+        mockUpdates: Option.some(false),
+        mockUpdateServerPort: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "ProtonDev-sys/t3code",
+                TAURI_SIGNING_PUBLIC_KEY: "public-key",
+                T3CODE_TAURI_UPDATER_ENDPOINTS:
+                  "https://updates.example/latest.json,https://fallback.example/latest.json",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(resolved.updaterEndpoints, [
+        "https://updates.example/latest.json",
+        "https://fallback.example/latest.json",
+      ]);
+    }),
+  );
+
+  it.effect("keeps unsigned local builds without default GitHub updater endpoints", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("win"),
+        target: Option.some("nsis"),
+        arch: Option.some("x64"),
+        buildVersion: Option.some("0.0.27-nightly.20260510.1"),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.some(false),
+        keepStage: Option.some(false),
+        signed: Option.some(false),
+        verbose: Option.some(false),
+        mockUpdates: Option.some(false),
+        mockUpdateServerPort: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "ProtonDev-sys/t3code",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(resolved.updaterEndpoints, []);
     }),
   );
 

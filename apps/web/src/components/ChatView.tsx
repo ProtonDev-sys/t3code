@@ -4227,6 +4227,7 @@ export default function ChatView(props: ChatViewProps) {
               resolvedTheme={resolvedTheme}
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
+              skills={activeProviderStatus?.skills ?? []}
               onIsAtEndChange={onIsAtEndChange}
             />
 

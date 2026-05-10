@@ -73,6 +73,7 @@ beforeAll(() => {
 });
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
 
 function buildProps() {
   return {
@@ -102,7 +103,54 @@ function buildProps() {
   };
 }
 
+function buildLongUserMessageText(tail = "deep hidden detail only after expand") {
+  return Array.from({ length: 9 }, (_, index) =>
+    index === 8 ? tail : `Line ${index + 1}: ${"verbose prompt content ".repeat(8).trim()}`,
+  ).join("\n");
+}
+
+function buildUserTimelineEntry(text: string) {
+  return {
+    id: "entry-user",
+    kind: "message" as const,
+    createdAt: MESSAGE_CREATED_AT,
+    message: {
+      id: MessageId.make("message-user"),
+      role: "user" as const,
+      text,
+      createdAt: MESSAGE_CREATED_AT,
+      streaming: false,
+    },
+  };
+}
+
 describe("MessagesTimeline", () => {
+  it("renders collapse controls for long user messages", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText())]}
+      />,
+    );
+
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed="true"');
+    expect(markup).toContain('data-user-message-fade="true"');
+    expect(markup).toContain('data-user-message-footer="true"');
+  }, 20_000);
+
+  it("does not render collapse controls for short user messages", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[buildUserTimelineEntry("Short.")]} />,
+    );
+
+    expect(markup).not.toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsible="false"');
+    expect(markup).toContain('data-user-message-footer="true"');
+  });
+
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -136,6 +184,50 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Terminal 1 lines 1-5");
     expect(markup).toContain("lucide-terminal");
     expect(markup).toContain("yoo what&#x27;s ");
+  }, 20_000);
+
+  it("renders provider skill tokens with the composer chip UI", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        skills={[{ name: "review", displayName: "Review Skill" }]}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("message-2"),
+              role: "user",
+              text: "Run $review then continue",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            message: {
+              id: MessageId.make("assistant-1"),
+              role: "assistant",
+              text: "Use $review from markdown too",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Review Skill");
+    expect(markup).toContain("border-fuchsia-500/25");
+    expect(markup).toContain("Run ");
+    expect(markup).toContain(" then continue");
+    expect(markup).toContain("Use ");
+    expect(markup).toContain(" from markdown too");
   }, 20_000);
 
   it("renders context compaction entries in the normal work log", async () => {

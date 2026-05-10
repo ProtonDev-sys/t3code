@@ -1,4 +1,9 @@
-import { type EnvironmentId, type MessageId, type TurnId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type MessageId,
+  type ServerProviderSkill,
+  type TurnId,
+} from "@t3tools/contracts";
 import {
   createContext,
   memo,
@@ -61,6 +66,7 @@ import {
   formatInlineTerminalContextLabel,
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
+import { SkillInlineText } from "./SkillInlineText";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 
 // ---------------------------------------------------------------------------
@@ -81,6 +87,7 @@ interface TimelineRowSharedState {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onForkThread: () => void;
@@ -93,6 +100,7 @@ interface TimelineRowSharedState {
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
+const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -122,6 +130,7 @@ interface MessagesTimelineProps {
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
+  skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   onIsAtEndChange: (isAtEnd: boolean) => void;
 }
 
@@ -153,6 +162,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   resolvedTheme,
   timestampFormat,
   workspaceRoot,
+  skills = EMPTY_TIMELINE_SKILLS,
   onIsAtEndChange,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
@@ -231,6 +241,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
+      skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onForkThread,
@@ -250,6 +261,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
+      skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onForkThread,
@@ -264,7 +276,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-hidden" data-timeline-root="true">
+      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
         <TimelineRowContent row={item} />
       </div>
     ),
@@ -381,35 +393,35 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                     )}
                   </div>
                 )}
-                {(displayedUserMessage.visibleText.trim().length > 0 ||
-                  terminalContexts.length > 0) && (
-                  <UserMessageBody
-                    text={displayedUserMessage.visibleText}
-                    terminalContexts={terminalContexts}
-                  />
-                )}
-                <div className="mt-1.5 flex items-center justify-end gap-2">
-                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                    {displayedUserMessage.copyText && (
-                      <MessageCopyButton text={displayedUserMessage.copyText} />
-                    )}
-                    {canRevertAgentWork && (
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={ctx.isRevertingCheckpoint || ctx.isWorking}
-                        onClick={() => ctx.onRevertUserMessage(row.message.id)}
-                        title="Revert to this message"
-                      >
-                        <Undo2Icon className="size-3" />
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-right text-xs text-muted-foreground/50">
-                    {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
-                  </p>
-                </div>
+                <CollapsibleUserMessageBody
+                  text={displayedUserMessage.visibleText}
+                  terminalContexts={terminalContexts}
+                  skills={ctx.skills}
+                  footer={
+                    <>
+                      <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                        {displayedUserMessage.copyText && (
+                          <MessageCopyButton text={displayedUserMessage.copyText} />
+                        )}
+                        {canRevertAgentWork && (
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant="outline"
+                            disabled={ctx.isRevertingCheckpoint || ctx.isWorking}
+                            onClick={() => ctx.onRevertUserMessage(row.message.id)}
+                            title="Revert to this message"
+                          >
+                            <Undo2Icon className="size-3" />
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-right text-xs text-muted-foreground/50">
+                        {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+                      </p>
+                    </>
+                  }
+                />
               </div>
             </div>
           );
@@ -446,6 +458,7 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
+                  skills={ctx.skills}
                 />
                 <AssistantChangedFilesSection
                   turnSummary={row.assistantTurnDiffSummary}
@@ -747,7 +760,7 @@ function AssistantChangedFilesSectionInner({
 
   return (
     <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
+      <div className="sticky top-2 z-10 mb-1.5 flex items-center justify-between gap-2 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
         <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
           <span>Changed files ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
@@ -804,9 +817,92 @@ const UserMessageTerminalContextInlineLabel = memo(
   },
 );
 
+const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
+const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
+const COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM = 1.75;
+const COLLAPSED_USER_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
+
+function shouldCollapseUserMessage(text: string): boolean {
+  if (text.trim().length === 0) {
+    return false;
+  }
+
+  return (
+    text.length > MAX_COLLAPSED_USER_MESSAGE_LENGTH ||
+    text.split("\n").length > MAX_COLLAPSED_USER_MESSAGE_LINES
+  );
+}
+
+const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
+  text: string;
+  terminalContexts: ParsedTerminalContextEntry[];
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  footer?: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
+  const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
+  const isCollapsed = canCollapse && !expanded;
+
+  return (
+    <div>
+      {hasVisibleBody ? (
+        <div
+          className={cn("relative", isCollapsed && "max-h-44 overflow-hidden")}
+          data-user-message-body="true"
+          data-user-message-collapsed={isCollapsed ? "true" : "false"}
+          data-user-message-collapsible={canCollapse ? "true" : "false"}
+          data-user-message-fade={isCollapsed ? "true" : "false"}
+          style={
+            isCollapsed
+              ? {
+                  WebkitMaskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
+                  maskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
+                }
+              : undefined
+          }
+        >
+          <UserMessageBody
+            text={props.text}
+            terminalContexts={props.terminalContexts}
+            skills={props.skills}
+          />
+        </div>
+      ) : null}
+      {canCollapse || props.footer ? (
+        <div
+          className={cn(
+            "mt-1.5 flex items-center gap-2",
+            canCollapse && props.footer ? "justify-between" : "justify-end",
+          )}
+          data-user-message-footer="true"
+        >
+          {canCollapse ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              aria-expanded={expanded}
+              data-scroll-anchor-ignore
+              onClick={() => setExpanded((value) => !value)}
+              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
+            >
+              {expanded ? "Show less" : "Show full message"}
+            </Button>
+          ) : null}
+          {props.footer ? (
+            <div className="ml-auto flex items-center gap-2">{props.footer}</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
 }) {
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
@@ -829,7 +925,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {props.text.slice(cursor, matchIndex)}
+              <SkillInlineText text={props.text.slice(cursor, matchIndex)} skills={props.skills} />
             </span>,
           );
         }
@@ -846,7 +942,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (cursor < props.text.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {props.text.slice(cursor)}
+              <SkillInlineText text={props.text.slice(cursor)} skills={props.skills} />
             </span>,
           );
         }
@@ -874,7 +970,11 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     }
 
     if (props.text.length > 0) {
-      inlineNodes.push(<span key="user-message-terminal-context-inline-text">{props.text}</span>);
+      inlineNodes.push(
+        <span key="user-message-terminal-context-inline-text">
+          <SkillInlineText text={props.text} skills={props.skills} />
+        </span>,
+      );
     } else if (inlinePrefix.length === 0) {
       return null;
     }
@@ -892,7 +992,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
   return (
     <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-      {props.text}
+      <SkillInlineText text={props.text} skills={props.skills} />
     </div>
   );
 });

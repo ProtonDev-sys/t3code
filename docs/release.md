@@ -7,7 +7,7 @@ This document covers the unified release workflow for stable and nightly desktop
 - Workflow: `.github/workflows/release.yml`
 - Triggers:
   - push tag matching `v*.*.*` for stable releases
-  - scheduled nightly at `09:00 UTC`
+  - scheduled nightly every 3 hours
   - manual `workflow_dispatch` for either channel
 - Runs quality gates first: lint, typecheck, test.
 - Builds four artifacts in parallel for both channels:
@@ -21,6 +21,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - Nightly runs are always GitHub prereleases and never marked latest.
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
 - Includes Tauri auto-update metadata (`latest.json` or `nightly.json`) and updater signatures in release assets.
+- Publishes a fixed `nightly` GitHub Release/tag for the nightly updater feed, while stable uses GitHub's latest-release URL.
 - Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
@@ -30,7 +31,7 @@ This document covers the unified release workflow for stable and nightly desktop
 
 - Workflow: `.github/workflows/release.yml`
 - Triggers:
-  - scheduled every day at `09:00 UTC`
+  - scheduled every 3 hours
   - manual `workflow_dispatch` with `channel=nightly`
 - Runs the same desktop quality gates and artifact matrix as the tagged release flow.
 - Publishes a GitHub prerelease only:
@@ -39,6 +40,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - `make_latest` is always `false`
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
 - Publishes Tauri auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
+- Mirrors the latest nightly updater assets to a fixed `nightly` GitHub Release/tag so the app can poll one stable nightly feed URL.
 - Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
 - Does not commit version bumps back to `main`.
 
@@ -53,6 +55,8 @@ This document covers the unified release workflow for stable and nightly desktop
 - Endpoint source:
   - `T3CODE_TAURI_UPDATER_ENDPOINTS`, if set.
   - otherwise `T3CODE_DESKTOP_UPDATER_ENDPOINTS` or `TAURI_UPDATER_ENDPOINTS`.
+  - signed GitHub builds default to `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` for stable and `https://github.com/<owner>/<repo>/releases/download/nightly/nightly.json` for nightly.
+  - the default repository is resolved from `T3CODE_DESKTOP_UPDATE_REPOSITORY`, then `GITHUB_REPOSITORY`, then `ProtonDev-sys/t3code`.
 - Public key source:
   - `T3CODE_TAURI_UPDATER_PUBKEY`, if set.
   - otherwise `T3CODE_DESKTOP_UPDATER_PUBKEY`, `TAURI_UPDATER_PUBKEY`, or `TAURI_SIGNING_PUBLIC_KEY`.
