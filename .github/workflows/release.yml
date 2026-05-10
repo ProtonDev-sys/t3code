@@ -455,7 +455,6 @@ jobs:
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           files: |
             release-assets/*.dmg
-            release-assets/*.zip
             release-assets/*.AppImage
             release-assets/*.exe
             release-assets/*.tar.gz
@@ -476,7 +475,6 @@ jobs:
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           files: |
             release-assets/*.dmg
-            release-assets/*.zip
             release-assets/*.AppImage
             release-assets/*.exe
             release-assets/*.tar.gz
@@ -513,7 +511,6 @@ jobs:
           make_latest: false
           files: |
             release-assets/*.dmg
-            release-assets/*.zip
             release-assets/*.AppImage
             release-assets/*.exe
             release-assets/*.tar.gz
