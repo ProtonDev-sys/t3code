@@ -109,6 +109,9 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       const personalId = ProviderInstanceId.make("codex_personal");
       const workId = ProviderInstanceId.make("codex_work");
       const codexDriverKind = ProviderDriverKind.make("codex");
+      const serverConfig = yield* ServerConfig;
+      const personalHomePath = path.join(serverConfig.baseDir, "codex-personal");
+      const workHomePath = path.join(serverConfig.baseDir, "codex-work");
 
       const configMap: ProviderInstanceConfigMap = {
         [personalId]: {
@@ -117,7 +120,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
           enabled: false,
           config: makeCodexConfig({
             binaryPath: "/opt/codex-personal/bin/codex",
-            homePath: "/home/julius/.codex_personal",
+            homePath: personalHomePath,
             customModels: ["personal-preview"],
           }),
         },
@@ -127,7 +130,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
           enabled: false,
           config: makeCodexConfig({
             binaryPath: "/opt/codex-work/bin/codex",
-            homePath: "/home/julius/.codex",
+            homePath: workHomePath,
             customModels: ["work-preview"],
           }),
         },
@@ -163,16 +166,14 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(personalSnapshot.driver).toBe(codexDriverKind);
       expect(personalSnapshot.enabled).toBe(false);
       expect(personalSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${path.resolve("/home/julius/.codex_personal")}`,
+        `codex:home:${path.resolve(personalHomePath)}`,
       );
 
       const workSnapshot = yield* work!.snapshot.getSnapshot;
       expect(workSnapshot.instanceId).toBe(workId);
       expect(workSnapshot.driver).toBe(codexDriverKind);
       expect(workSnapshot.enabled).toBe(false);
-      expect(workSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${path.resolve("/home/julius/.codex")}`,
-      );
+      expect(workSnapshot.continuation?.groupKey).toBe(`codex:home:${path.resolve(workHomePath)}`);
 
       // Nothing goes to the unavailable bucket — both drivers are registered.
       const unavailable = yield* registry.listUnavailable;
@@ -249,6 +250,9 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       const cursorId = ProviderInstanceId.make("cursor_default");
       const copilotId = ProviderInstanceId.make("copilot_default");
       const openCodeId = ProviderInstanceId.make("opencode_default");
+      const serverConfig = yield* ServerConfig;
+      const codexHomePath = path.join(serverConfig.baseDir, "codex-default");
+      const claudeHomePath = path.join(serverConfig.baseDir, "claude-work");
 
       const codexDriverKind = ProviderDriverKind.make("codex");
       const claudeDriverKind = ProviderDriverKind.make("claudeAgent");
@@ -261,14 +265,14 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
           driver: codexDriverKind,
           displayName: "Codex",
           enabled: false,
-          config: makeCodexConfig({ homePath: "/home/julius/.codex" }),
+          config: makeCodexConfig({ homePath: codexHomePath }),
         },
         [claudeId]: {
           driver: claudeDriverKind,
           displayName: "Claude",
           enabled: false,
           config: makeClaudeConfig({
-            homePath: "/home/julius/.claude-work",
+            homePath: claudeHomePath,
             launchArgs: "--verbose",
           }),
         },
@@ -368,7 +372,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(codexSnapshot.driver).toBe(codexDriverKind);
       expect(codexSnapshot.enabled).toBe(false);
       expect(codexSnapshot.continuation?.groupKey).toBe(
-        `codex:home:${path.resolve("/home/julius/.codex")}`,
+        `codex:home:${path.resolve(codexHomePath)}`,
       );
 
       const claudeSnapshot = yield* claude!.snapshot.getSnapshot;
@@ -376,7 +380,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
       expect(claudeSnapshot.driver).toBe(claudeDriverKind);
       expect(claudeSnapshot.enabled).toBe(false);
       expect(claudeSnapshot.continuation?.groupKey).toBe(
-        `claude:home:${path.resolve("/home/julius/.claude-work")}`,
+        `claude:home:${path.resolve(claudeHomePath)}`,
       );
 
       const cursorSnapshot = yield* cursor!.snapshot.getSnapshot;
