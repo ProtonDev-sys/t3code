@@ -23,7 +23,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
 - Includes Tauri auto-update metadata (`latest.json` or `nightly.json`) and updater signatures in release assets.
 - Publishes a fixed `nightly` GitHub Release/tag for the nightly updater feed, while stable uses GitHub's latest-release URL.
-- Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
+- Optionally publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file when repository variable `T3CODE_PUBLISH_NPM` is set to `true`:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
 - Signing is optional and auto-detected per platform from secrets.
@@ -69,7 +69,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - each matrix build writes a per-platform Tauri manifest first.
   - the workflow merges those per-platform manifests into one channel manifest before publishing the GitHub Release.
 
-## 0) npm OIDC trusted publishing setup (CLI)
+## 0) Optional npm OIDC trusted publishing setup (CLI)
 
 The workflow publishes the CLI with `npm publish` from `apps/server` after bumping
 the package version to the release tag version.
@@ -83,11 +83,12 @@ Checklist:
    - Workflow file: `.github/workflows/release.yml`
    - Environment (if used): match your npm trusted publishing config
 3. Ensure npm account and org policies allow trusted publishing for the package.
-4. Create release tag `vX.Y.Z` and push; workflow will:
+4. Set GitHub repository variable `T3CODE_PUBLISH_NPM` to `true`.
+5. Create release tag `vX.Y.Z` and push; workflow will:
    - set `apps/server/package.json` version to `X.Y.Z`
    - build web + server
    - run `npm publish --access public --tag latest`
-5. Nightly runs from the same workflow file publish with `npm publish --access public --tag nightly`.
+6. Nightly runs from the same workflow file publish with `npm publish --access public --tag nightly`.
 
 ## 1) Dry-run release without signing
 
