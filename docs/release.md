@@ -10,6 +10,7 @@ This document covers the unified release workflow for stable and nightly desktop
   - scheduled nightly every 3 hours
   - manual `workflow_dispatch` for either channel
 - Runs quality gates first: lint, typecheck, test.
+- Uses standard GitHub-hosted runners for the release jobs, so the workflow can run in this fork without upstream-specific runner labels.
 - Builds four artifacts in parallel for both channels:
   - macOS `arm64` DMG
   - macOS `x64` DMG
