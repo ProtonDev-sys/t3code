@@ -9,9 +9,11 @@ import {
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
   resolveDesktopWebAssetBrand,
+  resolveGitHubReleaseAssetName,
   resolveGitHubUpdaterEndpoint,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
+  resolveReleaseAssetFileName,
   resolveTauriBundleDirectoryName,
   resolveTauriBundleTargets,
 } from "./build-desktop-artifact.ts";
@@ -114,6 +116,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         target: "dmg",
       }),
       ["dmg"],
+    );
+  });
+
+  it("normalizes release asset filenames for GitHub download URLs", () => {
+    assert.equal(
+      resolveGitHubReleaseAssetName("T3 Code (Nightly)_0.0.27-nightly.20260510.46_x64-setup.exe"),
+      "T3.Code.Nightly._0.0.27-nightly.20260510.46_x64-setup.exe",
+    );
+  });
+
+  it("keeps macOS updater archives distinct across architectures", () => {
+    assert.equal(
+      resolveReleaseAssetFileName({
+        arch: "arm64",
+        fileName: "T3 Code (Nightly).app.tar.gz",
+        platform: "mac",
+      }),
+      "T3.Code.Nightly._aarch64.app.tar.gz",
+    );
+    assert.equal(
+      resolveReleaseAssetFileName({
+        arch: "x64",
+        fileName: "T3 Code (Nightly).app.tar.gz.sig",
+        platform: "mac",
+      }),
+      "T3.Code.Nightly._x64.app.tar.gz.sig",
     );
   });
 

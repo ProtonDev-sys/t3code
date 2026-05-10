@@ -260,6 +260,38 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveDesktopUpdateChannel(version) === "nightly" ? "nightly" : "production";
 }
 
+export function resolveGitHubReleaseAssetName(fileName: string): string {
+  const normalized = fileName
+    .replace(/[^A-Za-z0-9._-]+/g, ".")
+    .replace(/\.{2,}/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+
+  return normalized || fileName;
+}
+
+function resolveMacUpdaterArchiveArchSuffix(arch: typeof BuildArch.Type): string {
+  if (arch === "arm64") return "aarch64";
+  if (arch === "x64") return "x64";
+  return arch;
+}
+
+export function resolveReleaseAssetFileName(input: {
+  readonly arch: typeof BuildArch.Type;
+  readonly fileName: string;
+  readonly platform: typeof BuildPlatform.Type;
+}): string {
+  const macArchSuffix = resolveMacUpdaterArchiveArchSuffix(input.arch);
+  let fileName = input.fileName;
+
+  if (input.platform === "mac" && input.fileName.endsWith(".app.tar.gz.sig")) {
+    fileName = `${input.fileName.slice(0, -".app.tar.gz.sig".length)}_${macArchSuffix}.app.tar.gz.sig`;
+  } else if (input.platform === "mac" && input.fileName.endsWith(".app.tar.gz")) {
+    fileName = `${input.fileName.slice(0, -".app.tar.gz".length)}_${macArchSuffix}.app.tar.gz`;
+  }
+
+  return resolveGitHubReleaseAssetName(fileName);
+}
+
 function resolveUpdaterOs(platform: typeof BuildPlatform.Type): string {
   switch (platform) {
     case "mac":
@@ -308,6 +340,25 @@ function resolveUpdaterTargetKey(
   },
 ) {
   return `${resolveUpdaterOs(options.platform)}-${resolveUpdaterArch(options.arch)}-${resolveUpdaterInstaller(options.target)}`;
+}
+
+function resolveUpdaterSignaturePath(
+  copiedArtifacts: ReadonlyArray<string>,
+  options: ResolvedBuildOptions,
+): string | undefined {
+  if (options.platform === "mac") {
+    return copiedArtifacts.find((artifact) => artifact.endsWith(".app.tar.gz.sig"));
+  }
+  if (options.platform === "linux" && options.target.toLowerCase() === "appimage") {
+    return copiedArtifacts.find((artifact) => artifact.endsWith(".AppImage.sig"));
+  }
+  if (options.platform === "win" && options.target.toLowerCase() === "nsis") {
+    return copiedArtifacts.find((artifact) => artifact.endsWith(".exe.sig"));
+  }
+  if (options.platform === "win" && options.target.toLowerCase() === "msi") {
+    return copiedArtifacts.find((artifact) => artifact.endsWith(".msi.sig"));
+  }
+  return copiedArtifacts.find((artifact) => artifact.endsWith(".sig"));
 }
 
 function endpointDirectoryUrl(endpoint: string): URL {
@@ -567,7 +618,7 @@ const writeTauriUpdateManifest = Effect.fn("writeTauriUpdateManifest")(function*
 
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const signaturePath = input.copiedArtifacts.find((artifact) => artifact.endsWith(".sig"));
+  const signaturePath = resolveUpdaterSignaturePath(input.copiedArtifacts, input.options);
   if (!signaturePath) {
     return yield* new BuildScriptError({
       message: "Tauri updater artifacts were requested, but no .sig file was produced.",
@@ -743,6 +794,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
   const copiedArtifacts: string[] = [];
+  const copiedAssetNames = new Set<string>();
   for (const bundleDir of bundleDirs) {
     if (!(yield* fs.exists(bundleDir))) continue;
     const entries = yield* fs.readDirectory(bundleDir);
@@ -750,7 +802,18 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       const from = path.join(bundleDir, entry);
       const stat = yield* fs.stat(from).pipe(Effect.catch(() => Effect.succeed(null)));
       if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
-      const to = path.join(options.outputDir, entry);
+      const releaseAssetName = resolveReleaseAssetFileName({
+        arch: options.arch,
+        fileName: entry,
+        platform: options.platform,
+      });
+      const to = path.join(options.outputDir, releaseAssetName);
+      if (copiedAssetNames.has(releaseAssetName)) {
+        return yield* new BuildScriptError({
+          message: `Multiple desktop artifacts resolved to the same release asset name: ${releaseAssetName}`,
+        });
+      }
+      copiedAssetNames.add(releaseAssetName);
       if (stat.type === "Directory") {
         yield* fs.copy(from, to);
       } else {
