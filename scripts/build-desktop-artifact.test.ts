@@ -12,6 +12,8 @@ import {
   resolveGitHubUpdaterEndpoint,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
+  resolveTauriBundleDirectoryName,
+  resolveTauriBundleTargets,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
@@ -91,6 +93,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         endpoints: ["https://updates.example/latest.json"],
         pubkey: "trusted-public-key",
       },
+    );
+  });
+
+  it("builds the macOS app updater bundle alongside signed DMG releases", () => {
+    assert.equal(resolveTauriBundleDirectoryName("app"), "macos");
+    assert.equal(resolveTauriBundleDirectoryName("dmg"), "dmg");
+    assert.deepStrictEqual(
+      resolveTauriBundleTargets({
+        createUpdaterArtifacts: true,
+        platform: "mac",
+        target: "dmg",
+      }),
+      ["app", "dmg"],
+    );
+    assert.deepStrictEqual(
+      resolveTauriBundleTargets({
+        createUpdaterArtifacts: false,
+        platform: "mac",
+        target: "dmg",
+      }),
+      ["dmg"],
     );
   });
 

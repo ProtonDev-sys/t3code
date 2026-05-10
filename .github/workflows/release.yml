@@ -343,6 +343,7 @@ jobs:
             "release/*.zip" \
             "release/*.AppImage" \
             "release/*.exe" \
+            "release/*.tar.gz" \
             "release/*.sig" \
             "release/*.json"; do
             for file in $pattern; do

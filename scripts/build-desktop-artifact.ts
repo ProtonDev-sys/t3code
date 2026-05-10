@@ -447,7 +447,21 @@ function resolveTauriBundleDir(input: {
   const targetRoot = input.rustTarget
     ? `${input.desktopDir}/src-tauri/target/${input.rustTarget}/release`
     : `${input.desktopDir}/src-tauri/target/release`;
-  return `${targetRoot}/bundle/${input.target}`;
+  return `${targetRoot}/bundle/${resolveTauriBundleDirectoryName(input.target)}`;
+}
+
+export function resolveTauriBundleDirectoryName(target: string): string {
+  return target.toLowerCase() === "app" ? "macos" : target.toLowerCase();
+}
+
+export function resolveTauriBundleTargets(
+  options: Pick<ResolvedBuildOptions, "createUpdaterArtifacts" | "platform" | "target">,
+): ReadonlyArray<string> {
+  const target = options.target.toLowerCase();
+  if (options.createUpdaterArtifacts && options.platform === "mac" && target === "dmg") {
+    return ["app", "dmg"];
+  }
+  return [target];
 }
 
 function resolveBundledNodeRuntimePath(input: {
@@ -606,8 +620,16 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const desktopDir = path.join(repoRoot, "apps/desktop");
   const tauriDir = path.join(desktopDir, "src-tauri");
   const target = options.target.toLowerCase();
+  const bundleTargets = resolveTauriBundleTargets(options);
   const rustTarget = resolveRustTarget(options.platform, options.arch);
-  const bundleDir = resolveTauriBundleDir({ desktopDir, target, rustTarget });
+  const bundleDirs = Array.from(
+    new Set(
+      bundleTargets.map((bundleTarget) =>
+        resolveTauriBundleDir({ desktopDir, target: bundleTarget, rustTarget }),
+      ),
+    ),
+  );
+  const primaryBundleDir = resolveTauriBundleDir({ desktopDir, target, rustTarget });
   const bunExecutable = resolveBunExecutable();
 
   if (options.updaterEndpoints.length > 0 && !options.updaterPubkey) {
@@ -679,7 +701,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     "tauri",
     "build",
     "--bundles",
-    target,
+    bundleTargets.join(","),
     "--target",
     rustTarget,
     "--config",
@@ -690,7 +712,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* Effect.try({
     try: () => {
-      removeDirectoryInside(path.join(tauriDir, "target"), bundleDir);
+      for (const bundleDir of bundleDirs) {
+        removeDirectoryInside(path.join(tauriDir, "target"), bundleDir);
+      }
       removeArtifactOutputDirectory(repoRoot, options.outputDir);
     },
     catch: (cause) =>
@@ -701,7 +725,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
 
   yield* Effect.log(
-    `[desktop-artifact] Building Tauri ${options.platform}/${target} (arch=${options.arch}, version=${appVersion})...`,
+    `[desktop-artifact] Building Tauri ${options.platform}/${bundleTargets.join(",")} (arch=${options.arch}, version=${appVersion})...`,
   );
   yield* runCommand(
     ChildProcess.make(bunExecutable, args, {
@@ -711,31 +735,34 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     }),
   );
 
-  if (!(yield* fs.exists(bundleDir))) {
+  if (!(yield* fs.exists(primaryBundleDir))) {
     return yield* new BuildScriptError({
-      message: `Tauri build completed but bundle directory was not found at ${bundleDir}`,
+      message: `Tauri build completed but bundle directory was not found at ${primaryBundleDir}`,
     });
   }
 
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
-  const entries = yield* fs.readDirectory(bundleDir);
   const copiedArtifacts: string[] = [];
-  for (const entry of entries) {
-    const from = path.join(bundleDir, entry);
-    const stat = yield* fs.stat(from).pipe(Effect.catch(() => Effect.succeed(null)));
-    if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
-    const to = path.join(options.outputDir, entry);
-    if (stat.type === "Directory") {
-      yield* fs.copy(from, to);
-    } else {
-      yield* fs.copyFile(from, to);
+  for (const bundleDir of bundleDirs) {
+    if (!(yield* fs.exists(bundleDir))) continue;
+    const entries = yield* fs.readDirectory(bundleDir);
+    for (const entry of entries) {
+      const from = path.join(bundleDir, entry);
+      const stat = yield* fs.stat(from).pipe(Effect.catch(() => Effect.succeed(null)));
+      if (!stat || (stat.type !== "File" && stat.type !== "Directory")) continue;
+      const to = path.join(options.outputDir, entry);
+      if (stat.type === "Directory") {
+        yield* fs.copy(from, to);
+      } else {
+        yield* fs.copyFile(from, to);
+      }
+      copiedArtifacts.push(to);
     }
-    copiedArtifacts.push(to);
   }
 
   if (copiedArtifacts.length === 0) {
     return yield* new BuildScriptError({
-      message: `Tauri build completed but no artifacts were produced in ${bundleDir}`,
+      message: `Tauri build completed but no artifacts were produced in ${bundleDirs.join(", ")}`,
     });
   }
   yield* writeTauriUpdateManifest({
