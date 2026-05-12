@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import { resolveBunCommand } from "../test/fixtures/resolveBunCommand.ts";
 
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/codex-app-server-mock-peer.ts"),
@@ -20,9 +21,10 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
-      const command = ChildProcess.make("bun", ["run", yield* mockPeerPath], {
+      const bunCommand = resolveBunCommand();
+      const command = ChildProcess.make(bunCommand, ["run", yield* mockPeerPath], {
         cwd: path.join(import.meta.dirname, ".."),
-        shell: process.platform === "win32",
+        shell: process.platform === "win32" && bunCommand === "bun",
       });
       return yield* spawner.spawn(command);
     });
@@ -126,8 +128,9 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const scope = yield* Scope.make();
+      const bunCommand = resolveBunCommand();
       const clientLayer = CodexClient.layerCommand({
-        command: "bun",
+        command: bunCommand,
         args: ["run", yield* mockPeerPath],
         cwd: path.join(import.meta.dirname, ".."),
       });

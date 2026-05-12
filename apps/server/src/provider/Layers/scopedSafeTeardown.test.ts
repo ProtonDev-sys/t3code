@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Fiber } from "effect";
 import { describe, expect } from "vitest";
 
 import { scopedSafeTeardown } from "./scopedSafeTeardown.ts";
@@ -65,6 +65,26 @@ describe("scopedSafeTeardown", () => {
         const squashed = Cause.squash(exit.cause);
         expect(squashed).toBeInstanceOf(BodyError);
       }
+    }),
+  );
+
+  it.effect("closes the scope when the body is interrupted", () =>
+    Effect.gen(function* () {
+      const finalizers: string[] = [];
+      const wrapped = Effect.gen(function* () {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            finalizers.push("interrupted");
+          }),
+        );
+        return yield* Effect.never;
+      }).pipe(scopedSafeTeardown("test"));
+
+      const fiber = yield* Effect.forkChild(wrapped);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(fiber);
+
+      expect(finalizers).toEqual(["interrupted"]);
     }),
   );
 

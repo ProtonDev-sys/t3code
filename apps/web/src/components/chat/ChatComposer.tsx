@@ -95,6 +95,7 @@ import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type {
   ActiveGoalState,
+  AgentActivityState,
   ActiveTasksState,
   PendingApproval,
   PendingUserInput,
@@ -173,6 +174,7 @@ const ComposerFooterStatusStrip = memo(function ComposerFooterStatusStrip(props:
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   showPlanToggle: boolean;
+  planSidebarKind: "plan" | "agents" | "tasks";
   planSidebarLabel: string;
   planSidebarOpen: boolean;
   onTogglePlanSidebar: () => void;
@@ -181,6 +183,7 @@ const ComposerFooterStatusStrip = memo(function ComposerFooterStatusStrip(props:
 }) {
   const showPlanMode = props.showInteractionModeToggle && props.interactionMode === "plan";
   const showPlanView = props.showPlanToggle && !showPlanMode;
+  const SidebarIcon = props.planSidebarKind === "agents" ? BotIcon : ListTodoIcon;
 
   return (
     <div
@@ -244,7 +247,7 @@ const ComposerFooterStatusStrip = memo(function ComposerFooterStatusStrip(props:
               : "bg-background/50 text-muted-foreground/78",
           )}
         >
-          <ListTodoIcon className="size-3.5" />
+          <SidebarIcon className="size-3.5" />
           {props.planSidebarLabel}
         </button>
       ) : null}
@@ -446,7 +449,9 @@ export interface ChatComposerProps {
   activeGoal: ActiveGoalState | null;
   activePlan: { turnId?: TurnId } | null;
   activeTasks: ActiveTasksState;
+  agentActivity: AgentActivityState;
   sidebarProposedPlan: { turnId?: TurnId } | null;
+  planSidebarKind: "plan" | "agents" | "tasks";
   planSidebarLabel: string;
   planSidebarOpen: boolean;
 
@@ -554,7 +559,9 @@ export const ChatComposer = memo(
       activeGoal,
       activePlan,
       activeTasks,
+      agentActivity,
       sidebarProposedPlan,
+      planSidebarKind,
       planSidebarLabel,
       planSidebarOpen,
       runtimeMode,
@@ -1061,7 +1068,10 @@ export const ChatComposer = memo(
     const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
     const hasTaskSidebarContent =
       activeTasks.running.length > 0 || activeTasks.completed.length > 0;
-    const showSidebarToggle = showPlanSidebarToggle || hasTaskSidebarContent;
+    const hasAgentSidebarContent =
+      agentActivity.running.length > 0 || agentActivity.recent.length > 0;
+    const showSidebarToggle =
+      showPlanSidebarToggle || hasAgentSidebarContent || hasTaskSidebarContent;
     const composerFooterActionLayoutKey = useMemo(() => {
       if (activePendingProgress) {
         return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
@@ -2591,6 +2601,7 @@ export const ChatComposer = memo(
                       ) : null
                     }
                     interactionMode={interactionMode}
+                    planSidebarKind={planSidebarKind}
                     planSidebarLabel={planSidebarLabel}
                     planSidebarOpen={planSidebarOpen}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
@@ -2659,6 +2670,7 @@ export const ChatComposer = memo(
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     interactionMode={interactionMode}
                     showPlanToggle={showSidebarToggle}
+                    planSidebarKind={planSidebarKind}
                     planSidebarLabel={planSidebarLabel}
                     planSidebarOpen={planSidebarOpen}
                     onTogglePlanSidebar={togglePlanSidebar}

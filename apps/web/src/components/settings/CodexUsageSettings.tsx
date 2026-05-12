@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import {
   formatCodexUsageLimitTitle,
   formatCodexUsageRemainingLabel,
+  formatCodexUsageRunoutEstimate,
   formatCodexUsageReset,
   formatCodexUsageWindowLimitLabel,
   getCodexUsageRemainingPercent,
@@ -24,6 +25,7 @@ interface UsageLimitRowDescriptor {
   readonly key: string;
   readonly title: string;
   readonly description: string;
+  readonly runoutEstimate: string | null;
   readonly window: CodexUsageWindowDescriptor;
 }
 
@@ -65,11 +67,17 @@ function CompactUsageRow({
 
 function UsageLimitRows({ rows }: { rows: ReadonlyArray<UsageLimitRowDescriptor> }) {
   return rows.map((row) => {
+    const description = [
+      row.description,
+      row.runoutEstimate ? `depletes ${row.runoutEstimate}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     return (
       <CompactUsageRow
         key={row.key}
         title={row.title}
-        description={row.description}
+        description={description}
         control={<UsageProgress window={row.window} />}
       />
     );
@@ -108,13 +116,16 @@ function formatUsageLimitRow(input: {
   readonly providerName: string;
   readonly window: CodexUsageWindowDescriptor;
   readonly windowCount: number;
+  readonly limitUpdatedAt: string | null;
 }): Omit<UsageLimitRowDescriptor, "key" | "window"> {
   const baseTitle = formatProviderScopedLimitTitle(input.limit, input.providerName);
   const windowTitle = formatCodexUsageWindowLimitLabel(input.window);
   const reset = formatCodexUsageReset(input.window.usage.resetsAt);
+  const runoutEstimate = formatCodexUsageRunoutEstimate(input.window.usage, input.limitUpdatedAt);
   return {
     title: input.windowCount > 1 ? `${baseTitle} - ${windowTitle}` : baseTitle,
     description: reset ? `${windowTitle} - Resets ${reset}` : windowTitle,
+    runoutEstimate,
   };
 }
 
@@ -130,11 +141,13 @@ function buildUsageLimitSections(
           providerName: snapshot.entry.displayName,
           window,
           windowCount: windows.length,
+          limitUpdatedAt: snapshot.updatedAt,
         });
         return {
           key: `${limit.key}:${window.key}`,
           title: row.title,
           description: row.description,
+          runoutEstimate: row.runoutEstimate,
           window,
         };
       });

@@ -1,3 +1,5 @@
+import { extname } from "node:path";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -264,6 +266,13 @@ export interface CodexAppServerCommandLayerOptions extends CodexAppServerClientO
   readonly env?: Record<string, string>;
 }
 
+const WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS = new Set([".EXE", ".COM"]);
+
+function requiresWindowsShell(command: string): boolean {
+  const extension = extname(command).toUpperCase();
+  return !WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS.has(extension);
+}
+
 export const layerCommand = (
   options: CodexAppServerCommandLayerOptions,
 ): Layer.Layer<
@@ -279,7 +288,7 @@ export const layerCommand = (
         const command = ChildProcess.make(options.command, [...(options.args ?? [])], {
           ...(options.cwd ? { cwd: options.cwd } : {}),
           ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
-          shell: process.platform === "win32",
+          shell: process.platform === "win32" && requiresWindowsShell(options.command),
         });
         return yield* spawner.spawn(command).pipe(
           Effect.mapError(

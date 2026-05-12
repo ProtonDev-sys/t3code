@@ -23,7 +23,12 @@ import { render } from "vitest-browser-react";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { getServerConfig, getServerConfigUpdatedNotification } from "../rpc/serverState";
+import {
+  applyServerConfigEvent,
+  getServerConfig,
+  getServerConfigUpdatedNotification,
+  setServerConfigSnapshot,
+} from "../rpc/serverState";
 import { getWsConnectionStatus } from "../rpc/wsConnectionState";
 import { getRouter } from "../router";
 import { useStore } from "../store";
@@ -300,6 +305,56 @@ function queryToastTitles(): string[] {
   );
 }
 
+async function resetRpcHarness(): Promise<void> {
+  await rpcHarness.reset({
+    resolveUnary: (request) => resolveWsRpc(request._tag),
+    getInitialStreamValues: (request) => {
+      if (request._tag === WS_METHODS.subscribeServerLifecycle) {
+        return [
+          {
+            version: 1,
+            sequence: 1,
+            type: "welcome",
+            payload: fixture.welcome,
+          },
+        ];
+      }
+      if (request._tag === WS_METHODS.subscribeServerConfig) {
+        return [
+          {
+            version: 1,
+            type: "snapshot",
+            config: fixture.serverConfig,
+          },
+        ];
+      }
+      if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
+        return [
+          {
+            kind: "snapshot",
+            snapshot: toShellSnapshot(fixture.snapshot),
+          },
+        ];
+      }
+      if (
+        request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
+        request.threadId === THREAD_ID
+      ) {
+        return [
+          {
+            kind: "snapshot",
+            snapshot: {
+              snapshotSequence: fixture.snapshot.snapshotSequence,
+              thread: fixture.snapshot.threads[0],
+            },
+          },
+        ];
+      }
+      return [];
+    },
+  });
+}
+
 async function waitForElement<T extends Element>(
   query: () => T | null,
   errorMessage: string,
@@ -348,15 +403,6 @@ async function waitForToast(title: string, count = 1): Promise<void> {
   );
 }
 
-async function waitForNoToast(title: string): Promise<void> {
-  await vi.waitFor(
-    () => {
-      expect(queryToastTitles().filter((t) => t === title)).toHaveLength(0);
-    },
-    { timeout: 10_000, interval: 50 },
-  );
-}
-
 async function waitForNoToasts(): Promise<void> {
   await vi.waitFor(
     () => {
@@ -366,15 +412,22 @@ async function waitForNoToasts(): Promise<void> {
   );
 }
 
-async function waitForInitialWsSubscriptions(): Promise<void> {
+async function waitForInitialWsSubscriptions(
+  startIndex: number,
+  options?: { readonly requireLifecycle?: boolean },
+): Promise<void> {
+  const requireLifecycle = options?.requireLifecycle ?? true;
   await vi.waitFor(
     () => {
-      expect(
-        rpcHarness.requests.some((request) => request._tag === WS_METHODS.subscribeServerLifecycle),
-      ).toBe(true);
-      expect(
-        rpcHarness.requests.some((request) => request._tag === WS_METHODS.subscribeServerConfig),
-      ).toBe(true);
+      const requests = rpcHarness.requests.slice(startIndex);
+      if (requireLifecycle) {
+        expect(
+          requests.some((request) => request._tag === WS_METHODS.subscribeServerLifecycle),
+        ).toBe(true);
+      }
+      expect(requests.some((request) => request._tag === WS_METHODS.subscribeServerConfig)).toBe(
+        true,
+      );
     },
     { timeout: 8_000, interval: 16 },
   );
@@ -416,7 +469,10 @@ async function waitForServerConfigStreamReady(): Promise<void> {
   throw new Error("Timed out waiting for the server config stream to deliver updates.");
 }
 
-async function mountApp(): Promise<{ cleanup: () => Promise<void> }> {
+async function mountApp(options?: {
+  readonly requireLifecycleSubscription?: boolean;
+}): Promise<{ cleanup: () => Promise<void> }> {
+  const requestStartIndex = rpcHarness.requests.length;
   const host = document.createElement("div");
   host.style.position = "fixed";
   host.style.inset = "0";
@@ -438,7 +494,11 @@ async function mountApp(): Promise<{ cleanup: () => Promise<void> }> {
   );
   await waitForComposerEditor();
   await waitForToastViewport();
-  await waitForInitialWsSubscriptions();
+  const subscriptionOptions =
+    options?.requireLifecycleSubscription !== undefined
+      ? { requireLifecycle: options.requireLifecycleSubscription }
+      : undefined;
+  await waitForInitialWsSubscriptions(requestStartIndex, subscriptionOptions);
   await waitForWsConnection();
   await waitForServerConfigSnapshot();
   await waitForServerConfigStreamReady();
@@ -468,53 +528,7 @@ describe("Keybindings update toast", () => {
   });
 
   beforeEach(async () => {
-    await rpcHarness.reset({
-      resolveUnary: (request) => resolveWsRpc(request._tag),
-      getInitialStreamValues: (request) => {
-        if (request._tag === WS_METHODS.subscribeServerLifecycle) {
-          return [
-            {
-              version: 1,
-              sequence: 1,
-              type: "welcome",
-              payload: fixture.welcome,
-            },
-          ];
-        }
-        if (request._tag === WS_METHODS.subscribeServerConfig) {
-          return [
-            {
-              version: 1,
-              type: "snapshot",
-              config: fixture.serverConfig,
-            },
-          ];
-        }
-        if (request._tag === ORCHESTRATION_WS_METHODS.subscribeShell) {
-          return [
-            {
-              kind: "snapshot",
-              snapshot: toShellSnapshot(fixture.snapshot),
-            },
-          ];
-        }
-        if (
-          request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
-          request.threadId === THREAD_ID
-        ) {
-          return [
-            {
-              kind: "snapshot",
-              snapshot: {
-                snapshotSequence: fixture.snapshot.snapshotSequence,
-                thread: fixture.snapshot.threads[0],
-              },
-            },
-          ];
-        }
-        return [];
-      },
-    });
+    await resetRpcHarness();
     await __resetLocalApiForTests();
     localStorage.clear();
     document.body.innerHTML = "";
@@ -562,19 +576,17 @@ describe("Keybindings update toast", () => {
   });
 
   it("does not show a toast from the replayed cached value on subscribe", async () => {
+    setServerConfigSnapshot(fixture.serverConfig);
+    applyServerConfigEvent({
+      version: 1,
+      type: "keybindingsUpdated",
+      payload: { keybindings: fixture.serverConfig.keybindings, issues: [] },
+    });
+    expect(getServerConfigUpdatedNotification()?.source).toBe("keybindingsUpdated");
+
     const mounted = await mountApp();
-
     try {
-      sendServerConfigUpdatedPush([]);
-      await waitForToast("Keybindings updated");
-      await waitForNoToast("Keybindings updated");
-
-      // Remount the app — onServerConfigUpdated replays the cached value
-      // synchronously on subscribe. This should NOT produce a toast.
-      await mounted.cleanup();
-      const remounted = await mountApp();
-
-      // Give it a moment to process the replayed value
+      // Give the subscription a moment to process the replayed cached value.
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       const titles = queryToastTitles();
@@ -582,11 +594,8 @@ describe("Keybindings update toast", () => {
         titles.filter((t) => t === "Keybindings updated").length,
         "Replayed cached value should not produce a toast",
       ).toBe(0);
-
-      await remounted.cleanup();
-    } catch (error) {
-      await mounted.cleanup().catch(() => {});
-      throw error;
+    } finally {
+      await mounted.cleanup();
     }
   });
 });

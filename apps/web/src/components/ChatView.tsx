@@ -57,6 +57,7 @@ import {
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
   deriveActiveGoalState,
+  deriveAgentActivityState,
   deriveActivePlanState,
   deriveActiveTasksState,
   findSidebarProposedPlan,
@@ -123,7 +124,10 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import { useSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
+import {
+  deriveLogicalProjectKeyFromSettings,
+  selectProjectGroupingSettings,
+} from "../logicalProject";
 import {
   reconnectSavedEnvironment,
   useSavedEnvironmentRegistryStore,
@@ -1150,10 +1154,7 @@ export default function ChatView(props: ChatViewProps) {
     },
     [],
   );
-  const projectGroupingSettings = useSettings((settings) => ({
-    sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
-    sidebarProjectGroupingOverrides: settings.sidebarProjectGroupingOverrides,
-  }));
+  const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -1545,6 +1546,10 @@ export default function ChatView(props: ChatViewProps) {
     [activeLatestTurn?.turnId, threadActivities],
   );
   const activeTasks = useMemo(() => deriveActiveTasksState(threadActivities), [threadActivities]);
+  const agentActivity = useMemo(
+    () => deriveAgentActivityState(threadActivities),
+    [threadActivities],
+  );
   const activeTasksSidebarKey = useMemo(() => {
     const runningTaskIds = activeTasks.running.map((task) => task.taskId).join(",");
     if (runningTaskIds.length > 0) {
@@ -1553,9 +1558,29 @@ export default function ChatView(props: ChatViewProps) {
     const latestCompletedTaskId = activeTasks.completed[0]?.taskId;
     return latestCompletedTaskId ? `tasks:${latestCompletedTaskId}` : null;
   }, [activeTasks]);
+  const agentActivitySidebarKey = useMemo(() => {
+    const runningAgentIds = agentActivity.running.map((agent) => agent.id).join(",");
+    if (runningAgentIds.length > 0) {
+      return `agents:${runningAgentIds}`;
+    }
+    const latestRecentAgentId = agentActivity.recent[0]?.id;
+    return latestRecentAgentId ? `agents:${latestRecentAgentId}` : null;
+  }, [agentActivity]);
+  const hasAgentActivity = agentActivity.running.length > 0 || agentActivity.recent.length > 0;
   const activePanelDismissalKey =
-    activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? activeTasksSidebarKey ?? "__dismissed__";
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
+    activePlan?.turnId ??
+    sidebarProposedPlan?.turnId ??
+    agentActivitySidebarKey ??
+    activeTasksSidebarKey ??
+    "__dismissed__";
+  const planSidebarKind =
+    sidebarProposedPlan || interactionMode === "plan"
+      ? "plan"
+      : hasAgentActivity
+        ? "agents"
+        : "tasks";
+  const planSidebarLabel =
+    planSidebarKind === "plan" ? "Plan" : planSidebarKind === "agents" ? "Agents" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -2506,8 +2531,31 @@ export default function ChatView(props: ChatViewProps) {
     if (planSidebarOpen) return;
     if (!activeTasksSidebarKey) return;
     if (planSidebarDismissedForTurnRef.current === activeTasksSidebarKey) return;
+    if (planSidebarDismissedForTurnRef.current === activePanelDismissalKey) return;
     setPlanSidebarOpen(true);
-  }, [activeTasks.running.length, activeTasksSidebarKey, autoOpenPlanSidebar, planSidebarOpen]);
+  }, [
+    activePanelDismissalKey,
+    activeTasks.running.length,
+    activeTasksSidebarKey,
+    autoOpenPlanSidebar,
+    planSidebarOpen,
+  ]);
+
+  useEffect(() => {
+    if (!autoOpenPlanSidebar) return;
+    if (agentActivity.running.length === 0) return;
+    if (planSidebarOpen) return;
+    if (!agentActivitySidebarKey) return;
+    if (planSidebarDismissedForTurnRef.current === agentActivitySidebarKey) return;
+    if (planSidebarDismissedForTurnRef.current === activePanelDismissalKey) return;
+    setPlanSidebarOpen(true);
+  }, [
+    activePanelDismissalKey,
+    agentActivity.running.length,
+    agentActivitySidebarKey,
+    autoOpenPlanSidebar,
+    planSidebarOpen,
+  ]);
 
   useEffect(() => {
     setIsRevertingCheckpoint(false);
@@ -4291,7 +4339,9 @@ export default function ChatView(props: ChatViewProps) {
                   activeGoal={activeGoal}
                   activePlan={activePlan as { turnId?: TurnId } | null}
                   activeTasks={activeTasks}
+                  agentActivity={agentActivity}
                   sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                  planSidebarKind={planSidebarKind}
                   planSidebarLabel={planSidebarLabel}
                   planSidebarOpen={planSidebarOpen}
                   runtimeMode={runtimeMode}
@@ -4389,6 +4439,7 @@ export default function ChatView(props: ChatViewProps) {
                 activePlan={activePlan}
                 activeProposedPlan={sidebarProposedPlan}
                 activeTasks={activeTasks}
+                agentActivity={agentActivity}
                 label={planSidebarLabel}
                 environmentId={environmentId}
                 markdownCwd={gitCwd ?? undefined}
@@ -4426,6 +4477,7 @@ export default function ChatView(props: ChatViewProps) {
             activePlan={activePlan}
             activeProposedPlan={sidebarProposedPlan}
             activeTasks={activeTasks}
+            agentActivity={agentActivity}
             label={planSidebarLabel}
             environmentId={environmentId}
             markdownCwd={gitCwd ?? undefined}

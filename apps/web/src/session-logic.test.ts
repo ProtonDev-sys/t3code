@@ -11,6 +11,7 @@ import {
   deriveCompletionDividerBeforeEntryId,
   deriveActiveWorkStartedAt,
   deriveActiveGoalState,
+  deriveAgentActivityState,
   deriveActivePlanState,
   deriveActiveTasksState,
   derivePendingApprovals,
@@ -732,6 +733,107 @@ describe("deriveActiveTasksState", () => {
           detail: "UI state checked",
           status: "completed",
           updatedAt: "2026-02-23T00:00:03.000Z",
+        },
+      ],
+    });
+  });
+});
+
+describe("deriveAgentActivityState", () => {
+  it("surfaces running subagent reasoning progress", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "task-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Subagent task started",
+        payload: {
+          taskId: "task-subagent-1",
+          taskType: "subagent",
+          detail: "Reviewing the server adapter",
+        },
+      }),
+      makeActivity({
+        id: "task-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "task-subagent-1",
+          summary: "Reading Codex adapter tests",
+          detail: "Inspecting model option handling",
+        },
+      }),
+    ];
+
+    expect(deriveAgentActivityState(activities)).toEqual({
+      running: [
+        {
+          id: "task:task-subagent-1",
+          taskId: "task-subagent-1",
+          label: "Reading Codex adapter tests",
+          detail: "Inspecting model option handling",
+          status: "running",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+          kindLabel: "subagent",
+        },
+      ],
+      recent: [],
+    });
+  });
+
+  it("tracks completed collab agent tool calls by prompt preview", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "agent-tool-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Subagent task started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          title: "Subagent task",
+          detail: "reviewer: Audit release workflow",
+          data: {
+            toolName: "Task",
+            input: {
+              subagent_type: "reviewer",
+              description: "Audit release workflow",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "agent-tool-completed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          detail: "reviewer: Audit release workflow",
+          data: {
+            toolName: "Task",
+            input: {
+              subagent_type: "reviewer",
+              description: "Audit release workflow",
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveAgentActivityState(activities)).toEqual({
+      running: [],
+      recent: [
+        {
+          id: "tool:task:reviewer: audit release workflow",
+          label: "reviewer: Audit release workflow",
+          detail: "reviewer: Audit release workflow",
+          status: "completed",
+          updatedAt: "2026-02-23T00:00:03.000Z",
+          kindLabel: "Subagent task",
         },
       ],
     });

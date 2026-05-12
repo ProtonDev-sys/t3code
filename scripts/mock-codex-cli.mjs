@@ -9,8 +9,47 @@ const cwd = process.cwd();
 const codexHome = process.env.CODEX_HOME || cwd;
 const cliVersion = "0.0.0-mock";
 
+function readArgValue(name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function handleExec() {
+  const outputPath = readArgValue("--output-last-message");
+  if (!outputPath) {
+    console.log(`codex-cli ${cliVersion}`);
+    return;
+  }
+
+  const schemaPath = readArgValue("--output-schema");
+  let required = ["title"];
+  if (schemaPath) {
+    try {
+      const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+      if (Array.isArray(schema.required)) {
+        required = schema.required.filter((key) => typeof key === "string");
+      }
+    } catch {
+      required = ["title"];
+    }
+  }
+
+  const valueByKey = {
+    body: "Mock structured body.",
+    branch: "mock-structured-output",
+    subject: "Mock structured subject",
+    title: "Mock structured title",
+  };
+  const output = Object.fromEntries(required.map((key) => [key, valueByKey[key] ?? `mock-${key}`]));
+  fs.writeFileSync(outputPath, `${JSON.stringify(output)}\n`, "utf8");
+}
+
 if (!args.includes("app-server")) {
-  console.log(`codex-cli ${cliVersion}`);
+  if (args.includes("exec")) {
+    handleExec();
+  } else {
+    console.log(`codex-cli ${cliVersion}`);
+  }
   process.exit(0);
 }
 
@@ -91,6 +130,7 @@ function threadResponse(model = "gpt-5.5") {
       ephemeral: false,
       modelProvider: "openai",
       preview: "",
+      sessionId: providerThreadId,
       source: "appServer",
       status: { type: "idle" },
       turns: [],

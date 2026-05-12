@@ -8,6 +8,7 @@ export interface ProcessRunOptions {
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
   outputMode?: "error" | "truncate" | undefined;
+  shell?: boolean | string | undefined;
 }
 
 export interface ProcessRunResult {
@@ -110,32 +111,33 @@ function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"
   child.kill(signal);
 }
 
+interface OutputBufferState {
+  chunks: Buffer[];
+  bytes: number;
+  truncated: boolean;
+}
+
 function appendChunkWithinLimit(
-  target: string,
-  currentBytes: number,
+  state: OutputBufferState,
   chunk: Buffer,
   maxBytes: number,
 ): {
-  next: string;
-  nextBytes: number;
   truncated: boolean;
 } {
-  const remaining = maxBytes - currentBytes;
+  const remaining = maxBytes - state.bytes;
   if (remaining <= 0) {
-    return { next: target, nextBytes: currentBytes, truncated: true };
+    return { truncated: true };
   }
+
   if (chunk.length <= remaining) {
-    return {
-      next: `${target}${chunk.toString()}`,
-      nextBytes: currentBytes + chunk.length,
-      truncated: false,
-    };
+    state.chunks.push(chunk);
+    state.bytes += chunk.length;
+    return { truncated: false };
   }
-  return {
-    next: `${target}${chunk.subarray(0, remaining).toString()}`,
-    nextBytes: currentBytes + remaining,
-    truncated: true,
-  };
+
+  state.chunks.push(chunk.subarray(0, remaining));
+  state.bytes += remaining;
+  return { truncated: true };
 }
 
 export async function runProcess(
@@ -152,15 +154,11 @@ export async function runProcess(
       cwd: options.cwd,
       env: options.env,
       stdio: "pipe",
-      shell: process.platform === "win32",
+      shell: options.shell ?? false,
     });
 
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
+    const stdoutState: OutputBufferState = { chunks: [], bytes: 0, truncated: false };
+    const stderrState: OutputBufferState = { chunks: [], bytes: 0, truncated: false };
     let timedOut = false;
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -192,35 +190,19 @@ export async function runProcess(
 
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer | string): Error | null => {
       const chunkBuffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      const text = chunkBuffer.toString();
-      const byteLength = chunkBuffer.length;
-      if (stream === "stdout") {
-        if (outputMode === "truncate") {
-          const appended = appendChunkWithinLimit(stdout, stdoutBytes, chunkBuffer, maxBufferBytes);
-          stdout = appended.next;
-          stdoutBytes = appended.nextBytes;
-          stdoutTruncated = stdoutTruncated || appended.truncated;
-          return null;
-        }
-        stdout += text;
-        stdoutBytes += byteLength;
-        if (stdoutBytes > maxBufferBytes) {
-          return normalizeBufferError(command, args, "stdout", maxBufferBytes);
-        }
-      } else {
-        if (outputMode === "truncate") {
-          const appended = appendChunkWithinLimit(stderr, stderrBytes, chunkBuffer, maxBufferBytes);
-          stderr = appended.next;
-          stderrBytes = appended.nextBytes;
-          stderrTruncated = stderrTruncated || appended.truncated;
-          return null;
-        }
-        stderr += text;
-        stderrBytes += byteLength;
-        if (stderrBytes > maxBufferBytes) {
-          return normalizeBufferError(command, args, "stderr", maxBufferBytes);
-        }
+      const state = stream === "stdout" ? stdoutState : stderrState;
+
+      if (outputMode === "truncate") {
+        const appended = appendChunkWithinLimit(state, chunkBuffer, maxBufferBytes);
+        state.truncated = state.truncated || appended.truncated;
+        return null;
       }
+
+      if (state.bytes + chunkBuffer.length > maxBufferBytes) {
+        return normalizeBufferError(command, args, stream, maxBufferBytes);
+      }
+      state.chunks.push(chunkBuffer);
+      state.bytes += chunkBuffer.length;
       return null;
     };
 
@@ -245,14 +227,16 @@ export async function runProcess(
     });
 
     child.once("close", (code, signal) => {
+      const stdout = Buffer.concat(stdoutState.chunks, stdoutState.bytes).toString();
+      const stderr = Buffer.concat(stderrState.chunks, stderrState.bytes).toString();
       const result: ProcessRunResult = {
         stdout,
         stderr,
         code,
         signal,
         timedOut,
-        stdoutTruncated,
-        stderrTruncated,
+        stdoutTruncated: stdoutState.truncated,
+        stderrTruncated: stderrState.truncated,
       };
 
       finalize(() => {

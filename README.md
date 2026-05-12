@@ -49,6 +49,10 @@ We are not accepting contributions yet.
 
 Observability guide: [docs/observability.md](./docs/observability.md)
 
+Agent activity guide: [docs/agent-activity.md](./docs/agent-activity.md)
+
+Release checklist: [docs/release.md](./docs/release.md)
+
 Usage limits in Settings show account-level provider limits reported by Codex and GitHub Copilot CLI. The Statistics page only uses usage generated inside T3 Code; Codex local history is intentionally ignored because its cost estimate is not reliable enough for totals.
 
 ## If you REALLY want to contribute still.... read this first

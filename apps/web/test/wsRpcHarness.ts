@@ -74,7 +74,10 @@ export class BrowserWsRpcHarness {
 
   connect(client: BrowserWsClient): void {
     if (this.scope) {
-      void Effect.runPromise(Scope.close(this.scope, Exit.void)).catch(() => undefined);
+      const previousScope = this.scope;
+      this.scope = null;
+      this.client = null;
+      void Effect.runPromise(Scope.close(previousScope, Exit.void)).catch(() => undefined);
     }
     if (this.streamPubSubs.size === 0) {
       this.initializeStreamPubSubs();
@@ -83,15 +86,17 @@ export class BrowserWsRpcHarness {
     this.scope = Effect.runSync(Scope.make());
     this.serverReady = Effect.runPromise(
       Scope.provide(this.scope)(
-        RpcServer.makeNoSerialization(WsRpcGroup, this.makeServerOptions()),
+        RpcServer.makeNoSerialization(WsRpcGroup, this.makeServerOptions(client)),
       ).pipe(Effect.provide(this.makeLayer())),
     ) as Promise<RpcServerInstance>;
   }
 
   async disconnect(): Promise<void> {
     if (this.scope) {
-      await Effect.runPromise(Scope.close(this.scope, Exit.void)).catch(() => undefined);
+      const previousScope = this.scope;
       this.scope = null;
+      this.client = null;
+      await Effect.runPromise(Scope.close(previousScope, Exit.void)).catch(() => undefined);
     }
     for (const pubsub of this.streamPubSubs.values()) {
       Effect.runSync(PubSub.shutdown(pubsub));
@@ -143,16 +148,13 @@ export class BrowserWsRpcHarness {
     return WsRpcGroup.toLayer(handlers as never);
   }
 
-  private makeServerOptions() {
+  private makeServerOptions(client: BrowserWsClient) {
     return {
       onFromServer: (response: unknown) =>
         Effect.sync(() => {
-          if (!this.client) {
-            return;
-          }
           const encoded = this.parser.encode(response);
           if (typeof encoded === "string") {
-            this.client.send(encoded);
+            client.send(encoded);
           }
         }),
     };

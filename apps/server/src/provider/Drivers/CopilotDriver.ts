@@ -119,7 +119,9 @@ export const CopilotDriver: ProviderDriver<CopilotSettings, CopilotDriverEnv> = 
       });
       const textGeneration = yield* makeCopilotTextGeneration(effectiveConfig, processEnv);
 
-      const checkProvider = checkCopilotProviderStatus(effectiveConfig, processEnv).pipe(
+      const checkProvider = checkCopilotProviderStatus(effectiveConfig, processEnv, {
+        includeUsage: false,
+      }).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );

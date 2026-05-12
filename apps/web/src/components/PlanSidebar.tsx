@@ -14,8 +14,14 @@ import {
   PanelRightCloseIcon,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
-import type { ActivePlanState, ActiveTaskState, ActiveTasksState } from "../session-logic";
-import type { LatestProposedPlanState } from "../session-logic";
+import type {
+  ActivePlanState,
+  ActiveTaskState,
+  ActiveTasksState,
+  AgentActivityEntry,
+  AgentActivityState,
+  LatestProposedPlanState,
+} from "../session-logic";
 import { formatTimestamp } from "../timestampFormat";
 import {
   proposedPlanTitle,
@@ -97,6 +103,7 @@ interface PlanSidebarProps {
   activePlan: ActivePlanState | null;
   activeProposedPlan: LatestProposedPlanState | null;
   activeTasks: ActiveTasksState;
+  agentActivity?: AgentActivityState | undefined;
   label?: string;
   environmentId: EnvironmentId;
   markdownCwd: string | undefined;
@@ -110,6 +117,7 @@ const PlanSidebar = memo(function PlanSidebar({
   activePlan,
   activeProposedPlan,
   activeTasks,
+  agentActivity,
   label = "Plan",
   environmentId,
   markdownCwd,
@@ -125,7 +133,19 @@ const PlanSidebar = memo(function PlanSidebar({
   const planMarkdown = activeProposedPlan?.planMarkdown ?? null;
   const displayedPlanMarkdown = planMarkdown ? stripDisplayedPlanMarkdown(planMarkdown) : null;
   const planTitle = planMarkdown ? proposedPlanTitle(planMarkdown) : null;
-  const hasTasks = activeTasks.running.length > 0 || activeTasks.completed.length > 0;
+  const agentActivityState = agentActivity ?? { running: [], recent: [] };
+  const hasAgentActivity =
+    agentActivityState.running.length > 0 || agentActivityState.recent.length > 0;
+  const agentTaskIds = new Set(
+    [...agentActivityState.running, ...agentActivityState.recent].flatMap((agent) =>
+      agent.taskId ? [agent.taskId] : [],
+    ),
+  );
+  const visibleRunningTasks = activeTasks.running.filter((task) => !agentTaskIds.has(task.taskId));
+  const visibleCompletedTasks = activeTasks.completed.filter(
+    (task) => !agentTaskIds.has(task.taskId),
+  );
+  const hasTasks = visibleRunningTasks.length > 0 || visibleCompletedTasks.length > 0;
 
   const handleCopyPlan = useCallback(() => {
     if (!planMarkdown) return;
@@ -308,19 +328,38 @@ const PlanSidebar = memo(function PlanSidebar({
             </div>
           ) : null}
 
-          {hasTasks ? (
+          {hasAgentActivity ? (
             <div className="space-y-3">
-              {activeTasks.running.length > 0 ? (
-                <TaskListSection
-                  title="Running"
-                  tasks={activeTasks.running}
+              {agentActivityState.running.length > 0 ? (
+                <AgentActivitySection
+                  title="Working"
+                  agents={agentActivityState.running}
                   timestampFormat={timestampFormat}
                 />
               ) : null}
-              {activeTasks.completed.length > 0 ? (
+              {agentActivityState.recent.length > 0 ? (
+                <AgentActivitySection
+                  title="Recent"
+                  agents={agentActivityState.recent}
+                  timestampFormat={timestampFormat}
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {hasTasks ? (
+            <div className="space-y-3">
+              {visibleRunningTasks.length > 0 ? (
+                <TaskListSection
+                  title="Running"
+                  tasks={visibleRunningTasks}
+                  timestampFormat={timestampFormat}
+                />
+              ) : null}
+              {visibleCompletedTasks.length > 0 ? (
                 <TaskListSection
                   title="Recent"
-                  tasks={activeTasks.completed}
+                  tasks={visibleCompletedTasks}
                   timestampFormat={timestampFormat}
                 />
               ) : null}
@@ -328,13 +367,102 @@ const PlanSidebar = memo(function PlanSidebar({
           ) : null}
 
           {/* Empty state */}
-          {!activePlan && !planMarkdown && !hasTasks ? (
+          {!activePlan && !planMarkdown && !hasAgentActivity && !hasTasks ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <p className="text-[13px] text-muted-foreground/40">No active tasks yet.</p>
+              <p className="text-[13px] text-muted-foreground/40">
+                {label.toLowerCase().includes("agent")
+                  ? "No agent activity yet."
+                  : "No active tasks yet."}
+              </p>
             </div>
           ) : null}
         </div>
       </ScrollArea>
+    </div>
+  );
+});
+
+const AgentActivitySection = memo(function AgentActivitySection({
+  title,
+  agents,
+  timestampFormat,
+}: {
+  title: string;
+  agents: ReadonlyArray<AgentActivityEntry>;
+  timestampFormat: TimestampFormat;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="mb-2 text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase">
+        {title}
+      </p>
+      <div className="space-y-1">
+        {agents.map((agent) => (
+          <AgentActivityRow key={agent.id} agent={agent} timestampFormat={timestampFormat} />
+        ))}
+      </div>
+    </div>
+  );
+});
+
+const AgentActivityRow = memo(function AgentActivityRow({
+  agent,
+  timestampFormat,
+}: {
+  agent: AgentActivityEntry;
+  timestampFormat: TimestampFormat;
+}) {
+  const [expanded, setExpanded] = useState(agent.status === "running");
+  const detail = agent.detail && agent.detail !== agent.label ? agent.detail : null;
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-border/50 bg-background/40",
+        agent.status === "running" && "border-blue-500/25 bg-blue-500/5",
+        agent.status === "failed" && "border-red-500/25 bg-red-500/5",
+      )}
+    >
+      <button
+        type="button"
+        className="flex w-full items-start gap-2.5 px-2.5 py-2 text-left"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <div className="mt-0.5">{taskStatusIcon(agent.status)}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="truncate text-[13px] leading-snug text-foreground/90">{agent.label}</p>
+            {agent.kindLabel ? (
+              <span className="shrink-0 rounded border border-border/55 px-1 py-0 text-[9px] uppercase tracking-wide text-muted-foreground/55">
+                {agent.kindLabel}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground/45">
+            <span>{taskStatusLabel(agent.status)}</span>
+            <span aria-hidden="true">/</span>
+            <span>{formatTimestamp(agent.updatedAt, timestampFormat)}</span>
+          </div>
+        </div>
+        {expanded ? (
+          <ChevronDownIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/45" />
+        ) : (
+          <ChevronRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/45" />
+        )}
+      </button>
+      {expanded ? (
+        <div className="border-border/45 border-t px-2.5 py-2">
+          {detail ? (
+            <p className="whitespace-pre-wrap wrap-break-word text-[12px] leading-5 text-muted-foreground/75">
+              {detail}
+            </p>
+          ) : null}
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground/35">
+            {agent.taskId ?? agent.id}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 });

@@ -20,13 +20,10 @@
  *
  * Strategy
  * --------
- * 1. Make a fresh scope manually.
- * 2. Run the body against that scope, capturing its Exit via
- *    `Effect.exit`.
- * 3. Close the scope, catching any cause (typed failure *or* defect)
- *    with a log.
- * 4. Replay the captured Exit so typed body failures still surface and
- *    successes still return their value.
+ * 1. Acquire a fresh scope as a managed resource.
+ * 2. Run the body against that scope.
+ * 3. Close the scope from the managed finalizer, catching any cause
+ *    (typed failure *or* defect) with a log.
  *
  * The helper deliberately logs teardown causes at `Warning` level —
  * silently swallowing them is dangerous because they usually indicate a
@@ -34,7 +31,7 @@
  *
  * @module provider/Layers/scopedSafeTeardown
  */
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Scope } from "effect";
 
 /**
  * Run `effect` with a freshly made `Scope.Scope`, guaranteeing that
@@ -49,13 +46,13 @@ import { Effect, Exit, Scope } from "effect";
 export const scopedSafeTeardown =
   (label: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, Exclude<R, Scope.Scope>> =>
-    Effect.gen(function* () {
-      const scope = yield* Scope.make();
-      const bodyExit = yield* effect.pipe(Effect.provideService(Scope.Scope, scope), Effect.exit);
-      yield* Scope.close(scope, Exit.void).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning(`${label} teardown errored; preserving body result`, cause),
+    Effect.acquireUseRelease(
+      Scope.make(),
+      (scope) => effect.pipe(Effect.provideService(Scope.Scope, scope)),
+      (scope, exit) =>
+        Scope.close(scope, exit).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning(`${label} teardown errored; preserving body result`, cause),
+          ),
         ),
-      );
-      return yield* bodyExit;
-    }) as Effect.Effect<A, E, Exclude<R, Scope.Scope>>;
+    ) as Effect.Effect<A, E, Exclude<R, Scope.Scope>>;

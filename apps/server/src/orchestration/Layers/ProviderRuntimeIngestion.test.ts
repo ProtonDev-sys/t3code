@@ -1558,6 +1558,47 @@ describe("ProviderRuntimeIngestion", () => {
     expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
   });
 
+  it("flushes buffered proposed plans when ingestion scope closes before completion", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-plan-delta-shutdown-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-plan-shutdown-flush"),
+      payload: {
+        delta: "## Shutdown plan\n\n- persist partial plan",
+      },
+    });
+
+    await harness.drain();
+    let readModel = await Effect.runPromise(harness.engine.getReadModel());
+    let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.proposedPlans.some(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-plan-shutdown-flush",
+      ),
+    ).toBe(false);
+
+    if (!scope) {
+      throw new Error("missing ingestion scope");
+    }
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
+
+    readModel = await Effect.runPromise(harness.engine.getReadModel());
+    thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const proposedPlan = thread?.proposedPlans.find(
+      (entry: ProviderRuntimeTestProposedPlan) =>
+        entry.id === "plan:thread-1:turn:turn-plan-shutdown-flush",
+    );
+    expect(proposedPlan?.planMarkdown).toBe("## Shutdown plan\n\n- persist partial plan");
+  });
+
   it("buffers assistant deltas by default until completion", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1624,6 +1665,63 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("buffer me");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("flushes buffered assistant deltas when ingestion scope closes before completion", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-shutdown-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-shutdown-flush"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-shutdown-flush",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-shutdown-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-shutdown-flush"),
+      itemId: asItemId("item-shutdown-flush"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "saved before completion",
+      },
+    });
+
+    await harness.drain();
+    let readModel = await Effect.runPromise(harness.engine.getReadModel());
+    let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.messages.some(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-shutdown-flush",
+      ),
+    ).toBe(false);
+
+    if (!scope) {
+      throw new Error("missing ingestion scope");
+    }
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
+
+    readModel = await Effect.runPromise(harness.engine.getReadModel());
+    thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const message = thread?.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-shutdown-flush",
+    );
+    expect(message?.text).toBe("saved before completion");
+    expect(message?.streaming).toBe(true);
   });
 
   it("flushes and completes buffered assistant text when an approval request opens", async () => {

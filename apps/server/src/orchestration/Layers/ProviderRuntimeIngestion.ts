@@ -36,6 +36,47 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
   CommandId.make(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
+const shutdownCommandId = (tag: string): CommandId =>
+  CommandId.make(`server:provider-runtime-ingestion:${tag}:${crypto.randomUUID()}`);
+
+function parseProviderTurnKey(key: string): { threadId: ThreadId; turnId: TurnId } | null {
+  const separatorIndex = key.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex === key.length - 1) {
+    return null;
+  }
+
+  return {
+    threadId: ThreadId.make(key.slice(0, separatorIndex)),
+    turnId: TurnId.make(key.slice(separatorIndex + 1)),
+  };
+}
+
+function parseBufferedProposedPlanKey(
+  planId: string,
+): { threadId: ThreadId; turnId?: TurnId } | null {
+  const prefix = "plan:";
+  if (!planId.startsWith(prefix)) {
+    return null;
+  }
+
+  const rest = planId.slice(prefix.length);
+  const markerMatch = /:(turn|item|event):/.exec(rest);
+  if (!markerMatch || markerMatch.index <= 0) {
+    return null;
+  }
+
+  const result: { threadId: ThreadId; turnId?: TurnId } = {
+    threadId: ThreadId.make(rest.slice(0, markerMatch.index)),
+  };
+  if (markerMatch[1] === "turn") {
+    const markerEnd = markerMatch.index + markerMatch[0].length;
+    const turnId = rest.slice(markerEnd);
+    if (turnId.length > 0) {
+      result.turnId = TurnId.make(turnId);
+    }
+  }
+  return result;
+}
 
 interface AssistantSegmentState {
   baseKey: string;
@@ -962,7 +1003,7 @@ const make = Effect.gen(function* () {
     clearBufferedAssistantText(messageId);
 
   const flushBufferedAssistantMessage = (input: {
-    event: ProviderRuntimeEvent;
+    event?: ProviderRuntimeEvent;
     threadId: ThreadId;
     messageId: MessageId;
     turnId?: TurnId;
@@ -977,7 +1018,9 @@ const make = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.delta",
-        commandId: providerCommandId(input.event, input.commandTag),
+        commandId: input.event
+          ? providerCommandId(input.event, input.commandTag)
+          : shutdownCommandId(input.commandTag),
         threadId: input.threadId,
         messageId: input.messageId,
         delta: bufferedText,
@@ -988,7 +1031,7 @@ const make = Effect.gen(function* () {
     });
 
   const flushBufferedAssistantMessagesForTurn = (input: {
-    event: ProviderRuntimeEvent;
+    event?: ProviderRuntimeEvent;
     threadId: ThreadId;
     turnId: TurnId;
     createdAt: string;
@@ -1004,12 +1047,12 @@ const make = Effect.gen(function* () {
         assistantMessageIds,
         (messageId) =>
           flushBufferedAssistantMessage({
-            event: input.event,
             threadId: input.threadId,
             messageId,
             turnId: input.turnId,
             createdAt: input.createdAt,
             commandTag: input.commandTag,
+            ...(input.event ? { event: input.event } : {}),
           }).pipe(
             Effect.tap((flushed) =>
               flushed ? Effect.sync(() => flushedMessageIds.add(messageId)) : Effect.void,
@@ -1109,7 +1152,7 @@ const make = Effect.gen(function* () {
     });
 
   const upsertProposedPlan = (input: {
-    event: ProviderRuntimeEvent;
+    event?: ProviderRuntimeEvent;
     threadId: ThreadId;
     threadProposedPlans: ReadonlyArray<{
       id: string;
@@ -1132,7 +1175,9 @@ const make = Effect.gen(function* () {
       const existingPlan = findProposedPlanById(input.threadProposedPlans, input.planId);
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
-        commandId: providerCommandId(input.event, "proposed-plan-upsert"),
+        commandId: input.event
+          ? providerCommandId(input.event, "proposed-plan-upsert")
+          : shutdownCommandId("proposed-plan-upsert"),
         threadId: input.threadId,
         proposedPlan: {
           id: input.planId,
@@ -1148,7 +1193,7 @@ const make = Effect.gen(function* () {
     });
 
   const finalizeBufferedProposedPlan = (input: {
-    event: ProviderRuntimeEvent;
+    event?: ProviderRuntimeEvent;
     threadId: ThreadId;
     threadProposedPlans: ReadonlyArray<{
       id: string;
@@ -1171,7 +1216,6 @@ const make = Effect.gen(function* () {
       }
 
       yield* upsertProposedPlan({
-        event: input.event,
         threadId: input.threadId,
         threadProposedPlans: input.threadProposedPlans,
         planId: input.planId,
@@ -1182,9 +1226,55 @@ const make = Effect.gen(function* () {
             ? bufferedPlan.createdAt
             : input.updatedAt,
         updatedAt: input.updatedAt,
+        ...(input.event ? { event: input.event } : {}),
       });
       yield* clearBufferedProposedPlan(input.planId);
     });
+
+  const flushBufferedRuntimeState = Effect.fn("flushBufferedRuntimeState")(function* (
+    reason: "shutdown",
+  ) {
+    const now = new Date().toISOString();
+    const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
+    yield* Effect.forEach(
+      turnKeys,
+      (key) =>
+        Effect.gen(function* () {
+          const parsed = parseProviderTurnKey(key);
+          if (!parsed) {
+            return;
+          }
+          yield* flushBufferedAssistantMessagesForTurn({
+            threadId: parsed.threadId,
+            turnId: parsed.turnId,
+            createdAt: now,
+            commandTag: `assistant-delta-flush-on-${reason}`,
+          });
+        }),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+
+    const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
+    yield* Effect.forEach(
+      proposedPlanKeys,
+      (planId) =>
+        Effect.gen(function* () {
+          const parsed = parseBufferedProposedPlanKey(planId);
+          if (!parsed) {
+            return;
+          }
+          const detailedThread = yield* resolveThreadDetail(parsed.threadId);
+          yield* finalizeBufferedProposedPlan({
+            threadId: parsed.threadId,
+            threadProposedPlans: detailedThread?.proposedPlans ?? [],
+            planId,
+            ...(parsed.turnId ? { turnId: parsed.turnId } : {}),
+            updatedAt: now,
+          });
+        }),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+  });
 
   const clearTurnStateForSession = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -1794,6 +1884,17 @@ const make = Effect.gen(function* () {
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        worker.drain.pipe(
+          Effect.timeoutOption(Duration.seconds(5)),
+          Effect.andThen(flushBufferedRuntimeState("shutdown")),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider runtime ingestion shutdown flush failed", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      );
       yield* Effect.forkScoped(
         Stream.runForEach(providerService.streamEvents, (event) =>
           worker.enqueue({ source: "runtime", event }),

@@ -532,6 +532,9 @@ export function getCopilotFallbackModels(
 export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(function* (
   copilotSettings: CopilotSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly includeUsage?: boolean;
+  } = {},
 ): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
   const checkedAt = new Date().toISOString();
   const fallbackModels = getCopilotFallbackModels(copilotSettings);
@@ -596,9 +599,11 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
   let discoveredModels = Option.none<ReadonlyArray<ServerProviderModel>>();
   let discoveryWarning: string | undefined;
   if (parsed.auth.status !== "unauthenticated") {
-    const usage = yield* fetchCopilotQuotaUsage(copilotSettings, checkedAt, environment);
-    if (usage) {
-      parsed = { ...parsed, usage };
+    if (options.includeUsage !== false) {
+      const usage = yield* fetchCopilotQuotaUsage(copilotSettings, checkedAt, environment);
+      if (usage) {
+        parsed = { ...parsed, usage };
+      }
     }
 
     const discoveryExit = yield* Effect.exit(

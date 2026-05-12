@@ -1,6 +1,6 @@
 import { ProviderInteractionMode } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
-import { ImageIcon, ListTodoIcon, PlusIcon } from "lucide-react";
+import { BotIcon, ImageIcon, ListTodoIcon, PlusIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   Menu,
@@ -16,6 +16,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   canAddImage: boolean;
   fastModeControl?: ReactNode;
   interactionMode: ProviderInteractionMode;
+  planSidebarKind: "plan" | "agents" | "tasks";
   planSidebarLabel: string;
   planSidebarOpen: boolean;
   showInteractionModeToggle: boolean;
@@ -24,6 +25,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   onTogglePlanSidebar: () => void;
 }) {
   const hasModeControls = props.showInteractionModeToggle || Boolean(props.fastModeControl);
+  const SidebarIcon = props.planSidebarKind === "agents" ? BotIcon : ListTodoIcon;
 
   return (
     <Menu>
@@ -66,7 +68,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <>
             <MenuDivider />
             <MenuItem onClick={props.onTogglePlanSidebar}>
-              <ListTodoIcon className="size-4 shrink-0" />
+              <SidebarIcon className="size-4 shrink-0" />
               {props.planSidebarOpen
                 ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
                 : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`}

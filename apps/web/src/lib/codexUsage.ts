@@ -45,6 +45,11 @@ const WEEKLY_WINDOW_DURATION_MINS = 7 * 24 * 60;
 const MONTHLY_WINDOW_DURATION_MINS = 30 * 24 * 60;
 const DAILY_WINDOW_DURATION_MINS = 24 * 60;
 const HOURLY_WINDOW_DURATION_MINS = 60;
+const SECONDS_PER_MINUTE = 60;
+const MILLISECONDS_PER_SECOND = 1000;
+const MILLISECONDS_PER_MINUTE = SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND;
+const MINUTES_PER_DAY = 24 * 60;
+const MINUTES_PER_HOUR = 60;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -416,6 +421,116 @@ export function formatCodexUsageReset(value: number | null, now = new Date()): s
 export function formatCodexUsageRemainingLabel(window: CodexUsageRateLimitWindow): string | null {
   const remainingPercent = formatCodexUsagePercent(getCodexUsageRemainingPercent(window));
   return remainingPercent ? `${remainingPercent} left` : null;
+}
+
+export function estimateCodexUsageRunoutSeconds(
+  window: CodexUsageRateLimitWindow,
+  checkedAt: string | null,
+  now = new Date(),
+): number | null {
+  if (!Number.isFinite(window.usedPercent)) {
+    return null;
+  }
+  if (window.usedPercent <= 0) {
+    return null;
+  }
+  if (window.usedPercent >= 100) {
+    return 0;
+  }
+
+  const resetsAt = window.resetsAt;
+  const windowDurationMins = window.windowDurationMins;
+  if (
+    !Number.isFinite(resetsAt) ||
+    !Number.isFinite(windowDurationMins) ||
+    resetsAt === null ||
+    windowDurationMins === null ||
+    resetsAt <= 0 ||
+    windowDurationMins <= 0
+  ) {
+    return null;
+  }
+  if (!checkedAt) {
+    return null;
+  }
+
+  const checkedAtMs = Date.parse(checkedAt);
+  if (!Number.isFinite(checkedAtMs)) {
+    return null;
+  }
+
+  const nowMs = now.getTime();
+  const resetMs = resetsAt * MILLISECONDS_PER_SECOND;
+  const windowStartMs = resetMs - windowDurationMins * MILLISECONDS_PER_MINUTE;
+  const elapsedMs = checkedAtMs - windowStartMs;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return null;
+  }
+
+  const runoutMsFromWindowStart = (100 / window.usedPercent) * elapsedMs;
+  const estimatedDepletionMs = windowStartMs + runoutMsFromWindowStart;
+  if (!Number.isFinite(runoutMsFromWindowStart) || !Number.isFinite(estimatedDepletionMs)) {
+    return null;
+  }
+  if (estimatedDepletionMs >= resetMs) {
+    return null;
+  }
+
+  const remainingMs = estimatedDepletionMs - nowMs;
+  const totalRemainingWindowMs = resetMs - nowMs;
+  if (!Number.isFinite(remainingMs) || !Number.isFinite(totalRemainingWindowMs)) {
+    return null;
+  }
+  if (totalRemainingWindowMs <= 0) {
+    return null;
+  }
+  if (remainingMs <= 0) {
+    return 0;
+  }
+  if (remainingMs > totalRemainingWindowMs) {
+    return null;
+  }
+
+  return remainingMs / MILLISECONDS_PER_SECOND;
+}
+
+function formatDurationLabel(totalMilliseconds: number): string {
+  if (totalMilliseconds < MILLISECONDS_PER_MINUTE) {
+    return "<1m";
+  }
+
+  const totalMinutes = Math.ceil(totalMilliseconds / MILLISECONDS_PER_MINUTE);
+  const days = Math.floor(totalMinutes / MINUTES_PER_DAY);
+  const remainingMinutesAfterDays = totalMinutes - days * MINUTES_PER_DAY;
+  const hours = Math.floor(remainingMinutesAfterDays / MINUTES_PER_HOUR);
+  const minutes = remainingMinutesAfterDays - hours * MINUTES_PER_HOUR;
+
+  const parts: string[] = [];
+  if (days > 0) {
+    parts.push(`${days}d`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || parts.length === 0) {
+    parts.push(`${minutes}m`);
+  }
+  return parts.join(" ");
+}
+
+export function formatCodexUsageRunoutEstimate(
+  window: CodexUsageRateLimitWindow,
+  checkedAt: string | null,
+  now = new Date(),
+): string | null {
+  const estimateSeconds = estimateCodexUsageRunoutSeconds(window, checkedAt, now);
+  if (estimateSeconds === null) {
+    return null;
+  }
+  if (estimateSeconds <= 0) {
+    return "at limit";
+  }
+  return `in ${formatDurationLabel(estimateSeconds * MILLISECONDS_PER_SECOND)}`;
 }
 
 function formatEnumLabel(value: string): string {

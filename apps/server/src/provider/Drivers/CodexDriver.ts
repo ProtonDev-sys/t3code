@@ -203,10 +203,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // in as instance rebuilds from the registry rather than in-place
       // updates. Pre-provide `ChildProcessSpawner` so the check fits
       // `makeManagedServerProvider.checkProvider`'s `R = never`.
-      const checkProvider = checkCodexProviderStatus(effectiveConfig, undefined, processEnv).pipe(
+      const checkProvider = checkCodexProviderStatus(effectiveConfig, undefined, processEnv, {
+        includeUsage: false,
+      }).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
+
       const snapshot = yield* makeManagedServerProvider<CodexSettings>({
         getSettings: Effect.succeed(effectiveConfig),
         streamSettings: Stream.never,

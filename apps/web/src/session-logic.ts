@@ -121,6 +121,26 @@ const EMPTY_ACTIVE_TASKS_STATE: ActiveTasksState = {
   completed: [],
 };
 
+export interface AgentActivityEntry {
+  id: string;
+  taskId?: string | undefined;
+  label: string;
+  detail: string | null;
+  status: ActiveTaskState["status"];
+  updatedAt: string;
+  kindLabel: string | null;
+}
+
+export interface AgentActivityState {
+  running: AgentActivityEntry[];
+  recent: AgentActivityEntry[];
+}
+
+const EMPTY_AGENT_ACTIVITY_STATE: AgentActivityState = {
+  running: [],
+  recent: [],
+};
+
 export interface LatestProposedPlanState {
   id: OrchestrationProposedPlanId;
   createdAt: string;
@@ -644,6 +664,198 @@ export function deriveActiveTasksState(
     .slice(0, 8);
 
   return { running, completed };
+}
+
+export function deriveAgentActivityState(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): AgentActivityState {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const agentsById = new Map<string, AgentActivityEntry>();
+
+  for (const activity of ordered) {
+    const taskEntry = agentTaskEntryFromActivity(activity, agentsById);
+    if (taskEntry) {
+      agentsById.set(taskEntry.id, taskEntry);
+      continue;
+    }
+
+    const toolEntry = agentToolEntryFromActivity(activity);
+    if (!toolEntry) {
+      continue;
+    }
+    const previous = agentsById.get(toolEntry.id);
+    agentsById.set(toolEntry.id, mergeAgentActivityEntry(previous, toolEntry));
+  }
+
+  if (agentsById.size === 0) {
+    return EMPTY_AGENT_ACTIVITY_STATE;
+  }
+
+  const agents = [...agentsById.values()];
+  const running = agents
+    .filter((agent) => agent.status === "running")
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const recent = agents
+    .filter((agent) => agent.status !== "running")
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 8);
+
+  return { running, recent };
+}
+
+function agentTaskEntryFromActivity(
+  activity: OrchestrationThreadActivity,
+  agentsById: ReadonlyMap<string, AgentActivityEntry>,
+): AgentActivityEntry | null {
+  if (
+    activity.kind !== "task.started" &&
+    activity.kind !== "task.progress" &&
+    activity.kind !== "task.completed"
+  ) {
+    return null;
+  }
+
+  const payload = taskPayloadFromActivity(activity);
+  const taskId = readTaskPayloadText(payload, "taskId");
+  if (!taskId || taskId === "codex-goal") {
+    return null;
+  }
+
+  const id = `task:${taskId}`;
+  const previous = agentsById.get(id);
+  const taskType = readTaskPayloadText(payload, "taskType") ?? previous?.kindLabel ?? null;
+  if (taskType?.toLowerCase() === "plan") {
+    return null;
+  }
+
+  const summary = readTaskPayloadText(payload, "summary") ?? null;
+  const detail =
+    readTaskPayloadText(payload, "detail") ??
+    readTaskPayloadText(payload, "description") ??
+    summary ??
+    previous?.detail ??
+    activity.summary;
+  const label = summary ?? previous?.label ?? detail;
+
+  return {
+    id,
+    taskId,
+    label,
+    detail,
+    status: taskStatusFromActivity(activity, payload),
+    updatedAt: activity.createdAt,
+    kindLabel: taskType ?? previous?.kindLabel ?? "task",
+  };
+}
+
+function agentToolEntryFromActivity(
+  activity: OrchestrationThreadActivity,
+): AgentActivityEntry | null {
+  if (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "tool.updated" &&
+    activity.kind !== "tool.completed"
+  ) {
+    return null;
+  }
+
+  const payload = taskPayloadFromActivity(activity);
+  if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+    return null;
+  }
+
+  const title = extractToolTitle(payload) ?? activity.summary;
+  const detail = extractToolDetail(payload, title) ?? readTaskPayloadText(payload, "detail");
+  const label = extractAgentToolPromptPreview(payload) ?? detail ?? title;
+
+  return {
+    id: deriveAgentToolActivityId(activity, payload, label),
+    label,
+    detail,
+    status: agentToolStatusFromActivity(activity, payload),
+    updatedAt: activity.createdAt,
+    kindLabel: title && title !== label ? title : extractAgentToolName(payload),
+  };
+}
+
+function mergeAgentActivityEntry(
+  previous: AgentActivityEntry | undefined,
+  next: AgentActivityEntry,
+): AgentActivityEntry {
+  if (!previous) {
+    return next;
+  }
+  return {
+    ...previous,
+    ...next,
+    label: next.label || previous.label,
+    detail: next.detail ?? previous.detail,
+    kindLabel: next.kindLabel ?? previous.kindLabel,
+  };
+}
+
+function deriveAgentToolActivityId(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+  label: string,
+): string {
+  const toolCallId = extractToolCallId(payload);
+  if (toolCallId) {
+    return `tool:${toolCallId}`;
+  }
+
+  const keyParts = [
+    extractAgentToolName(payload),
+    extractAgentToolPromptPreview(payload),
+    readTaskPayloadText(payload, "detail"),
+    label,
+  ].reduce<string[]>((parts, part) => {
+    const normalized = normalizeAgentActivityKeyPart(part);
+    if (normalized && !parts.includes(normalized)) {
+      parts.push(normalized);
+    }
+    return parts;
+  }, []);
+  if (keyParts.length > 0) {
+    return `tool:${keyParts.join(":")}`;
+  }
+  return `tool:${activity.id}`;
+}
+
+function normalizeAgentActivityKeyPart(value: string | null | undefined): string | null {
+  const normalized = value?.replace(/\s+/gu, " ").trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized.slice(0, 160) : null;
+}
+
+function extractAgentToolPromptPreview(payload: Record<string, unknown> | null): string | null {
+  const input = asRecord(asRecord(payload?.data)?.input);
+  const description = asTrimmedString(input?.description);
+  const prompt = asTrimmedString(input?.prompt);
+  const subagentType = asTrimmedString(input?.subagent_type);
+  const label = description ?? prompt;
+  if (!label) {
+    return subagentType;
+  }
+  const preview = truncateInlinePreview(label, 120);
+  return subagentType ? `${subagentType}: ${preview}` : preview;
+}
+
+function extractAgentToolName(payload: Record<string, unknown> | null): string | null {
+  return asTrimmedString(asRecord(payload?.data)?.toolName);
+}
+
+function agentToolStatusFromActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): AgentActivityEntry["status"] {
+  const status = asTrimmedString(payload?.status);
+  if (status === "failed" || status === "stopped") {
+    return status;
+  }
+  if (activity.kind === "tool.completed") {
+    return "completed";
+  }
+  return "running";
 }
 
 export function findLatestProposedPlan(

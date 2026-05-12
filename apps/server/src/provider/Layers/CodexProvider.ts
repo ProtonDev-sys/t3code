@@ -19,13 +19,16 @@ import { ServerSettingsError } from "@t3tools/contracts";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 
-import { buildServerProvider, type ServerProviderDraft } from "../providerSnapshot.ts";
+import {
+  AUTH_PROBE_TIMEOUT_MS,
+  buildServerProvider,
+  type ServerProviderDraft,
+} from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { CODEX_SLASH_COMMANDS } from "./CodexSlashCommands.ts";
 import { scopedSafeTeardown } from "./scopedSafeTeardown.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 
-const PROVIDER_PROBE_TIMEOUT_MS = 8_000;
 const WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 const CODEX_PRESENTATION = {
   displayName: "Codex",
@@ -333,6 +336,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly cwd: string;
   readonly customModels?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly includeUsage?: boolean;
 }) {
   // `~` is not shell-expanded when env vars are set via `child_process.spawn`,
   // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
@@ -380,15 +384,19 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
+  const shouldIncludeUsage = input.includeUsage !== false;
+  const rateLimitsRequest = shouldIncludeUsage
+    ? client
+        .request("account/rateLimits/read", undefined)
+        .pipe(Effect.option, Effect.map(Option.getOrUndefined))
+    : Effect.sync((): CodexSchema.V2GetAccountRateLimitsResponse | undefined => undefined);
   const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
-      client
-        .request("account/rateLimits/read", undefined)
-        .pipe(Effect.option, Effect.map(Option.getOrUndefined)),
+      rateLimitsRequest,
     ],
     { concurrency: "unbounded" },
   );
@@ -553,12 +561,16 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     readonly cwd: string;
     readonly customModels: ReadonlyArray<string>;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly includeUsage?: boolean;
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
     ChildProcessSpawner.ChildProcessSpawner
   > = probeCodexAppServerProvider,
   environment: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly includeUsage?: boolean;
+  } = {},
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
@@ -599,7 +611,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     cwd,
     customModels: codexSettings.customModels,
     environment,
-  }).pipe(Effect.timeoutOption(Duration.millis(PROVIDER_PROBE_TIMEOUT_MS)), Effect.result);
+    ...(options.includeUsage !== undefined ? { includeUsage: options.includeUsage } : {}),
+  }).pipe(Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)), Effect.result);
 
   if (Result.isFailure(probeResult)) {
     const error = probeResult.failure;

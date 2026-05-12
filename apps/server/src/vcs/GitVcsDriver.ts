@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import * as NodePath from "node:path";
+
 import { Context, DateTime, Effect, Layer, Option } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -214,6 +218,7 @@ export class GitVcsDriver extends Context.Service<GitVcsDriver, GitVcsDriverShap
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
+const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.fsmonitor=false",
@@ -531,9 +536,261 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       maxOutputBytes: 64 * 1024,
     }).pipe(Effect.asVoid);
 
+  const resolveHeadCommit = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveHeadCommit",
+      cwd,
+      args: ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+      allowNonZeroExit: true,
+    }).pipe(
+      Effect.map((result) => {
+        if (result.exitCode !== 0) {
+          return null;
+        }
+        const commit = result.stdout.trim();
+        return commit.length > 0 ? commit : null;
+      }),
+    );
+
+  const hasHeadCommit = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.hasHeadCommit",
+      cwd,
+      args: ["rev-parse", "--verify", "HEAD"],
+      allowNonZeroExit: true,
+    }).pipe(Effect.map((result) => result.exitCode === 0));
+
+  const resolveCheckpointCommit = (cwd: string, checkpointRef: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveCheckpointCommit",
+      cwd,
+      args: ["rev-parse", "--verify", "--quiet", `${checkpointRef}^{commit}`],
+      allowNonZeroExit: true,
+    }).pipe(
+      Effect.map((result) => {
+        if (result.exitCode !== 0) {
+          return null;
+        }
+        const commit = result.stdout.trim();
+        return commit.length > 0 ? commit : null;
+      }),
+    );
+
+  const resolveGitCommonDir = (cwd: string) =>
+    Effect.gen(function* () {
+      const result = yield* execute({
+        operation: "GitVcsDriver.checkpoints.resolveGitCommonDir",
+        cwd,
+        args: ["rev-parse", "--git-common-dir"],
+      });
+      const gitCommonDir = result.stdout.trim();
+      return NodePath.isAbsolute(gitCommonDir) ? gitCommonDir : NodePath.resolve(cwd, gitCommonDir);
+    });
+
+  const checkpoints: VcsDriver.VcsCheckpointOps = {
+    captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
+      const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
+      const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+      const tempIndexPath = NodePath.join(gitCommonDir, `t3-checkpoint-index-${randomUUID()}`);
+      const commitEnv: NodeJS.ProcessEnv = {
+        ...globalThis.process.env,
+        GIT_INDEX_FILE: tempIndexPath,
+        GIT_AUTHOR_NAME: "T3 Code",
+        GIT_AUTHOR_EMAIL: "t3code@users.noreply.github.com",
+        GIT_COMMITTER_NAME: "T3 Code",
+        GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
+      };
+
+      const cleanupTempIndex = Effect.promise(() => rm(tempIndexPath, { force: true })).pipe(
+        Effect.ignore,
+      );
+
+      yield* Effect.gen(function* () {
+        const headExists = yield* hasHeadCommit(input.cwd);
+        if (headExists) {
+          yield* execute({
+            operation,
+            cwd: input.cwd,
+            args: ["read-tree", "HEAD"],
+            env: commitEnv,
+          });
+        }
+
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["add", "-A", "--", "."],
+          env: commitEnv,
+        });
+
+        const writeTreeResult = yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["write-tree"],
+          env: commitEnv,
+        });
+        const treeOid = writeTreeResult.stdout.trim();
+        if (treeOid.length === 0) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git write-tree",
+            cwd: input.cwd,
+            exitCode: 0,
+            detail: "git write-tree returned an empty tree oid.",
+          });
+        }
+
+        const message = `t3 checkpoint ref=${input.checkpointRef}`;
+        const commitTreeResult = yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["commit-tree", treeOid, "-m", message],
+          env: commitEnv,
+        });
+        const commitOid = commitTreeResult.stdout.trim();
+        if (commitOid.length === 0) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git commit-tree",
+            cwd: input.cwd,
+            exitCode: 0,
+            detail: "git commit-tree returned an empty commit oid.",
+          });
+        }
+
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["update-ref", input.checkpointRef, commitOid],
+        });
+      }).pipe(Effect.ensuring(cleanupTempIndex));
+    }),
+
+    hasCheckpointRef: (input) =>
+      resolveCheckpointCommit(input.cwd, input.checkpointRef).pipe(
+        Effect.map((commit) => commit !== null),
+      ),
+
+    restoreCheckpoint: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpoint")(function* (input) {
+      const operation = "GitVcsDriver.checkpoints.restoreCheckpoint";
+
+      let commitOid = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
+
+      if (!commitOid && input.fallbackToHead === true) {
+        commitOid = yield* resolveHeadCommit(input.cwd);
+      }
+
+      if (!commitOid) {
+        return false;
+      }
+
+      yield* execute({
+        operation,
+        cwd: input.cwd,
+        args: ["restore", "--source", commitOid, "--worktree", "--staged", "--", "."],
+      });
+      yield* execute({
+        operation,
+        cwd: input.cwd,
+        args: ["clean", "-fd", "--", "."],
+      });
+
+      const headExists = yield* hasHeadCommit(input.cwd);
+      if (headExists) {
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["reset", "--quiet", "--", "."],
+        });
+      }
+
+      return true;
+    }),
+
+    diffCheckpoints: Effect.fn("GitVcsDriver.checkpoints.diffCheckpoints")(function* (input) {
+      const operation = "GitVcsDriver.checkpoints.diffCheckpoints";
+      yield* Effect.annotateCurrentSpan({
+        "checkpoint.cwd": input.cwd,
+        "checkpoint.from_ref": input.fromCheckpointRef,
+        "checkpoint.to_ref": input.toCheckpointRef,
+        "checkpoint.ignore_whitespace": input.ignoreWhitespace,
+        "checkpoint.fallback_from_to_head": input.fallbackFromToHead,
+      });
+
+      let fromRevision: string = input.fromCheckpointRef;
+      if (input.fallbackFromToHead === true) {
+        const resolvedFromCommit = yield* resolveCheckpointCommit(
+          input.cwd,
+          input.fromCheckpointRef,
+        );
+        if (resolvedFromCommit) {
+          fromRevision = resolvedFromCommit;
+        } else {
+          const headCommit = yield* resolveHeadCommit(input.cwd);
+          if (!headCommit) {
+            return yield* new VcsProcessExitError({
+              operation,
+              command: "git diff",
+              cwd: input.cwd,
+              exitCode: 1,
+              detail: "Checkpoint ref is unavailable for diff operation.",
+            });
+          }
+          fromRevision = headCommit;
+        }
+      }
+
+      const result = yield* execute({
+        operation,
+        cwd: input.cwd,
+        args: [
+          "diff",
+          "--patch",
+          "--no-color",
+          "--no-ext-diff",
+          "--no-textconv",
+          ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
+          `${fromRevision}^{commit}`,
+          `${input.toCheckpointRef}^{commit}`,
+        ],
+        allowNonZeroExit: true,
+        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+      });
+
+      if (result.exitCode !== 0) {
+        return yield* new VcsProcessExitError({
+          operation,
+          command: "git diff",
+          cwd: input.cwd,
+          exitCode: result.exitCode,
+          detail: result.stderr.trim() || "Checkpoint ref is unavailable for diff operation.",
+        });
+      }
+
+      return result.stdout;
+    }),
+
+    deleteCheckpointRefs: Effect.fn("GitVcsDriver.checkpoints.deleteCheckpointRefs")(
+      function* (input) {
+        yield* Effect.forEach(
+          input.checkpointRefs,
+          (checkpointRef) =>
+            execute({
+              operation: "GitVcsDriver.checkpoints.deleteCheckpointRefs",
+              cwd: input.cwd,
+              args: ["update-ref", "-d", checkpointRef],
+              allowNonZeroExit: true,
+            }),
+          { discard: true },
+        );
+      },
+    ),
+  };
+
   return VcsDriver.VcsDriver.of({
     capabilities,
     execute,
+    checkpoints,
     detectRepository,
     isInsideWorkTree,
     listWorkspaceFiles,

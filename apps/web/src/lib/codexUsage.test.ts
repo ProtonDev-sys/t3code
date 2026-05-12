@@ -12,8 +12,10 @@ import {
   deriveLatestCodexUsageAccountSnapshot,
   deriveLatestCodexUsageAccountSnapshotFromProviders,
   deriveLatestCodexUsageSnapshot,
+  estimateCodexUsageRunoutSeconds,
   formatCodexUsageLimitTitle,
   formatCodexUsageRemainingLabel,
+  formatCodexUsageRunoutEstimate,
   getCodexUsageDisplayWindow,
   getCodexUsageWindows,
 } from "./codexUsage";
@@ -203,5 +205,49 @@ describe("codexUsage", () => {
       "codex",
       "gpt-5.3-codex-spark",
     ]);
+  });
+
+  it("estimates runout seconds from rate-limit windows", () => {
+    const window = {
+      usedPercent: 80,
+      resetsAt: Date.parse("2026-05-09T20:00:00.000Z") / 1000,
+      windowDurationMins: 300,
+    };
+    const estimate = estimateCodexUsageRunoutSeconds(
+      window,
+      "2026-05-09T17:30:00.000Z",
+      new Date("2026-05-09T17:45:00.000Z"),
+    );
+    expect(estimate).toBe(1350);
+  });
+
+  it("formats usage-runout estimates for low-signal windows", () => {
+    const window = {
+      usedPercent: 80,
+      resetsAt: Date.parse("2026-05-09T20:00:00.000Z") / 1000,
+      windowDurationMins: 300,
+    };
+    expect(
+      formatCodexUsageRunoutEstimate(
+        window,
+        "2026-05-09T17:30:00.000Z",
+        new Date("2026-05-09T17:45:00.000Z"),
+      ),
+    ).toBe("in 23m");
+  });
+
+  it("omits runout estimates when usage won't exhaust before reset", () => {
+    const window = {
+      usedPercent: 20,
+      resetsAt: Date.parse("2026-05-09T20:00:00.000Z") / 1000,
+      windowDurationMins: 300,
+    };
+    expect(
+      estimateCodexUsageRunoutSeconds(
+        window,
+        "2026-05-09T17:00:00.000Z",
+        new Date("2026-05-09T17:45:00.000Z"),
+      ),
+    ).toBeNull();
   });
 });

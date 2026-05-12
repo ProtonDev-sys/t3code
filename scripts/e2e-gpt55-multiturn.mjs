@@ -20,9 +20,11 @@ function log(line) {
   if (logs.length > 300) {
     logs.shift();
   }
-  const match = line.match(/pairingUrl:\s*(http:\/\/[^\s]+)/);
-  if (match?.[1]) {
-    pairingUrl = match[1];
+  const matches = line.matchAll(/pairingUrl:\s*(http:\/\/[^\s]+)/g);
+  for (const match of matches) {
+    if (match[1]) {
+      pairingUrl = match[1];
+    }
   }
 }
 
@@ -66,11 +68,18 @@ async function waitForHttp(url, timeoutMs = 90_000) {
   throw new Error(`Timed out waiting for ${url}: ${lastError?.message ?? "no response"}`);
 }
 
-async function waitForPairingUrl(timeoutMs = 90_000) {
+async function waitForPairingUrl(timeoutMs = 90_000, stableMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
+  let observedUrl = null;
+  let observedAt = 0;
   while (Date.now() < deadline) {
     if (pairingUrl) {
-      return pairingUrl;
+      if (pairingUrl !== observedUrl) {
+        observedUrl = pairingUrl;
+        observedAt = Date.now();
+      } else if (Date.now() - observedAt >= stableMs) {
+        return pairingUrl;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -291,6 +300,7 @@ async function main() {
   );
 
   const offset = await findPortOffset();
+  const serverPort = BASE_SERVER_PORT + offset;
   const webPort = BASE_WEB_PORT + offset;
   const webUrl = `http://localhost:${webPort}`;
   const env = {
@@ -299,6 +309,7 @@ async function main() {
     Path: `${mockBin}${path.delimiter}${process.env.Path ?? process.env.PATH ?? ""}`,
     PATHEXT: process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD",
     T3CODE_HOME: t3Home,
+    T3CODE_PORT: String(serverPort),
     T3CODE_PORT_OFFSET: String(offset),
     T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
     T3CODE_NO_BROWSER: "1",
@@ -342,7 +353,9 @@ async function main() {
   let failed = false;
   try {
     await waitForHttp(webUrl);
-    const authenticatedUrl = await waitForPairingUrl();
+    await waitForPairingUrl();
+    await waitForHttp(`${webUrl}/.well-known/t3/environment`, 30_000);
+    const authenticatedUrl = await waitForPairingUrl(30_000, 500);
 
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });

@@ -107,6 +107,7 @@ async function mountMenu(props?: {
         ) : null
       }
       interactionMode={props?.interactionMode ?? "default"}
+      planSidebarKind="tasks"
       planSidebarLabel="Plan"
       planSidebarOpen={false}
       showInteractionModeToggle={props?.showInteractionModeToggle ?? true}

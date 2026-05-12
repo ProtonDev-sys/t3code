@@ -7,6 +7,7 @@
  * @module Open
  */
 import { spawn } from "node:child_process";
+import { extname } from "node:path";
 
 import { EDITORS, OpenError, type EditorId } from "@t3tools/contracts";
 import { isCommandAvailable, type CommandAvailabilityOptions } from "@t3tools/shared/shell";
@@ -30,6 +31,7 @@ interface EditorLaunch {
 }
 
 const TARGET_WITH_POSITION_PATTERN = /^(.*?):(\d+)(?::(\d+))?$/;
+const WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS = new Set([".EXE", ".COM"]);
 
 function parseTargetPathAndPosition(target: string): {
   path: string;
@@ -99,6 +101,11 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
     default:
       return "xdg-open";
   }
+}
+
+function requiresWindowsShell(command: string): boolean {
+  const extension = extname(command).toUpperCase();
+  return !WINDOWS_DIRECT_EXECUTABLE_EXTENSIONS.has(extension);
 }
 
 export function resolveAvailableEditors(
@@ -192,13 +199,14 @@ export const launchDetached = (launch: EditorLaunch) =>
       let child;
       try {
         const isWin32 = process.platform === "win32";
+        const useShell = isWin32 && requiresWindowsShell(launch.command);
         child = spawn(
           launch.command,
-          isWin32 ? launch.args.map((a) => `"${a}"`) : [...launch.args],
+          useShell ? launch.args.map((a) => `"${a}"`) : [...launch.args],
           {
             detached: true,
             stdio: "ignore",
-            shell: isWin32,
+            shell: useShell,
           },
         );
       } catch (error) {
