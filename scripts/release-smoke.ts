@@ -105,6 +105,10 @@ function writeTauriManifestFixture(
   return manifestPath;
 }
 
+function writeAssetFixture(directory: string, name: string): void {
+  writeFileSync(resolve(directory, name), `smoke asset: ${name}\n`);
+}
+
 function assertContains(haystack: string, needle: string, message: string): void {
   if (!haystack.includes(needle)) {
     throw new Error(message);
@@ -203,6 +207,30 @@ try {
     "darwin-x86_64-app",
     "https://example.invalid/releases/T3%20Code_9.9.9-smoke.0_x64.dmg",
   );
+  const latestLinuxManifestPath = writeTauriManifestFixture(
+    tempRoot,
+    "latest",
+    "linux-x86_64-appimage",
+    "https://example.invalid/releases/T3%20Code_9.9.9-smoke.0_x64.AppImage",
+  );
+  const nightlyWinManifestPath = writeTauriManifestFixture(
+    tempRoot,
+    "nightly",
+    "windows-x86_64-nsis",
+    "https://example.invalid/releases/T3%20Code%20(Nightly)_9.9.10-nightly.20260413.321_x64-setup.exe",
+  );
+  const nightlyMacArmManifestPath = writeTauriManifestFixture(
+    tempRoot,
+    "nightly",
+    "darwin-aarch64-app",
+    "https://example.invalid/releases/T3%20Code_9.9.10-nightly.20260413.321_aarch64.dmg",
+  );
+  const nightlyMacX64ManifestPath = writeTauriManifestFixture(
+    tempRoot,
+    "nightly",
+    "darwin-x86_64-app",
+    "https://example.invalid/releases/T3%20Code_9.9.10-nightly.20260413.321_x64.dmg",
+  );
   const nightlyLinuxManifestPath = writeTauriManifestFixture(
     tempRoot,
     "nightly",
@@ -253,8 +281,28 @@ try {
     "darwin-x86_64-app",
     "Merged Tauri manifest is missing the macOS x64 target.",
   );
+  assertContains(
+    latestManifest,
+    "linux-x86_64-appimage",
+    "Merged Tauri manifest is missing the Linux target.",
+  );
 
   const nightlyManifest = readFileSync(resolve(releaseAssetsDir, "nightly.json"), "utf8");
+  assertContains(
+    nightlyManifest,
+    "windows-x86_64-nsis",
+    "Merged Tauri nightly manifest is missing the Windows target.",
+  );
+  assertContains(
+    nightlyManifest,
+    "darwin-aarch64-app",
+    "Merged Tauri nightly manifest is missing the macOS arm64 target.",
+  );
+  assertContains(
+    nightlyManifest,
+    "darwin-x86_64-app",
+    "Merged Tauri nightly manifest is missing the macOS x64 target.",
+  );
   assertContains(
     nightlyManifest,
     "linux-x86_64-appimage",
@@ -273,7 +321,96 @@ try {
     latestMacX64ManifestPath,
     "Release smoke unexpectedly kept the macOS x64 manifest.",
   );
+  assertMissing(
+    latestLinuxManifestPath,
+    "Release smoke unexpectedly kept the per-platform Linux manifest.",
+  );
+  assertMissing(
+    nightlyWinManifestPath,
+    "Release smoke unexpectedly kept the nightly Windows manifest.",
+  );
+  assertMissing(
+    nightlyMacArmManifestPath,
+    "Release smoke unexpectedly kept the nightly macOS arm64 manifest.",
+  );
+  assertMissing(
+    nightlyMacX64ManifestPath,
+    "Release smoke unexpectedly kept the nightly macOS x64 manifest.",
+  );
   assertMissing(nightlyLinuxManifestPath, "Release smoke unexpectedly kept the Linux manifest.");
+
+  const stableAssembledDir = resolve(tempRoot, "assembled-stable");
+  const nightlyAssembledDir = resolve(tempRoot, "assembled-nightly");
+  mkdirSync(stableAssembledDir, { recursive: true });
+  mkdirSync(nightlyAssembledDir, { recursive: true });
+  cpSync(latestManifestPath, resolve(stableAssembledDir, "latest.json"));
+  cpSync(resolve(releaseAssetsDir, "nightly.json"), resolve(nightlyAssembledDir, "nightly.json"));
+
+  for (const assetName of [
+    "T3.Code.Alpha._9.9.9-smoke.0_x64-setup.exe",
+    "T3.Code.Alpha._9.9.9-smoke.0_x64-setup.exe.sig",
+    "T3.Code.Alpha._9.9.9-smoke.0_amd64.AppImage",
+    "T3.Code.Alpha._9.9.9-smoke.0_amd64.AppImage.sig",
+    "T3.Code.Alpha._9.9.9-smoke.0_aarch64.dmg",
+    "T3.Code.Alpha._9.9.9-smoke.0_x64.dmg",
+    "T3.Code.Alpha._aarch64.app.tar.gz",
+    "T3.Code.Alpha._aarch64.app.tar.gz.sig",
+    "T3.Code.Alpha._x64.app.tar.gz",
+    "T3.Code.Alpha._x64.app.tar.gz.sig",
+  ]) {
+    writeAssetFixture(stableAssembledDir, assetName);
+  }
+
+  for (const assetName of [
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_x64-setup.exe",
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_x64-setup.exe.sig",
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_amd64.AppImage",
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_amd64.AppImage.sig",
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_aarch64.dmg",
+    "T3.Code.Nightly._9.9.10-nightly.20260413.321_x64.dmg",
+    "T3.Code.Nightly._aarch64.app.tar.gz",
+    "T3.Code.Nightly._aarch64.app.tar.gz.sig",
+    "T3.Code.Nightly._x64.app.tar.gz",
+    "T3.Code.Nightly._x64.app.tar.gz.sig",
+  ]) {
+    writeAssetFixture(nightlyAssembledDir, assetName);
+  }
+
+  execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, "scripts/verify-github-release-assets.ts"),
+      "--assets-dir",
+      stableAssembledDir,
+      "--channel",
+      "stable",
+      "--stable-tag",
+      "v9.9.9-smoke.0",
+      "--expected-prerelease",
+      "true",
+    ],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+    },
+  );
+
+  execFileSync(
+    process.execPath,
+    [
+      resolve(repoRoot, "scripts/verify-github-release-assets.ts"),
+      "--assets-dir",
+      nightlyAssembledDir,
+      "--channel",
+      "nightly",
+      "--nightly-tag",
+      "v9.9.10-nightly.20260413.321",
+    ],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+    },
+  );
 
   console.log("Release smoke checks passed.");
 } finally {

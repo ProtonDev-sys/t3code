@@ -64,7 +64,7 @@ jobs:
     name: Preflight
     needs: [check_changes]
     if: |
-      !failure() && !cancelled() &&
+      always() && !failure() && !cancelled() &&
       (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -160,6 +160,21 @@ jobs:
 
       - name: Test
         run: bun run test
+
+      - name: Validate updater signing secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          missing=()
+          [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]] || missing+=("TAURI_SIGNING_PRIVATE_KEY")
+          [[ -n "$TAURI_SIGNING_PUBLIC_KEY" ]] || missing+=("TAURI_SIGNING_PUBLIC_KEY")
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required updater signing secret(s): %s\n' "${missing[*]}" >&2
+            printf 'Stable and nightly releases require Tauri updater signatures so GitHub release assets can be verified before publication.\n' >&2
+            exit 1
+          fi
 
       - id: previous_tag
         name: Resolve previous release tag
@@ -442,6 +457,22 @@ jobs:
             rm -f "${manifests[@]}"
           done
 
+      - name: Verify assembled release assets
+        run: |
+          if [[ "${{ needs.preflight.outputs.release_channel }}" == "nightly" ]]; then
+            node scripts/verify-github-release-assets.ts \
+              --assets-dir release-assets \
+              --channel nightly \
+              --nightly-tag "${{ needs.preflight.outputs.tag }}" \
+              --expected-prerelease true
+          else
+            node scripts/verify-github-release-assets.ts \
+              --assets-dir release-assets \
+              --channel stable \
+              --stable-tag "${{ needs.preflight.outputs.tag }}" \
+              --expected-prerelease "${{ needs.preflight.outputs.is_prerelease }}"
+          fi
+
       - name: Publish release
         if: needs.preflight.outputs.previous_tag != ''
         uses: softprops/action-gh-release@v2
@@ -461,6 +492,7 @@ jobs:
             release-assets/*.sig
             release-assets/*.json
           fail_on_unmatched_files: true
+          overwrite_files: true
           token: ${{ github.token }}
 
       - name: Publish first release
@@ -481,6 +513,7 @@ jobs:
             release-assets/*.sig
             release-assets/*.json
           fail_on_unmatched_files: true
+          overwrite_files: true
           token: ${{ github.token }}
 
       - name: Clear nightly updater channel assets
@@ -519,6 +552,29 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
           token: ${{ github.token }}
+
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ needs.preflight.outputs.release_channel }}" == "nightly" ]]; then
+            node scripts/verify-github-release-assets.ts \
+              --repo "${{ github.repository }}" \
+              --channel nightly \
+              --nightly-tag "${{ needs.preflight.outputs.tag }}" \
+              --expected-prerelease true
+            node scripts/verify-github-release-assets.ts \
+              --repo "${{ github.repository }}" \
+              --channel nightly \
+              --nightly-tag nightly \
+              --expected-prerelease true
+          else
+            node scripts/verify-github-release-assets.ts \
+              --repo "${{ github.repository }}" \
+              --channel stable \
+              --stable-tag "${{ needs.preflight.outputs.tag }}" \
+              --expected-prerelease "${{ needs.preflight.outputs.is_prerelease }}"
+          fi
 
   finalize:
     name: Finalize release

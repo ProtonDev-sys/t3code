@@ -10,6 +10,8 @@ This document covers the unified release workflow for stable and nightly desktop
   - scheduled nightly every 3 hours
   - manual `workflow_dispatch` for either channel
 - Runs quality gates first: lint, typecheck, test.
+- The scheduled nightly change check only gates scheduled runs. Stable tag releases and manual
+  dispatches run preflight directly.
 - Uses standard GitHub-hosted runners for the release jobs, so the workflow can run in this fork without upstream-specific runner labels.
 - Builds four artifacts in parallel for both channels:
   - macOS `arm64` DMG
@@ -21,12 +23,19 @@ This document covers the unified release workflow for stable and nightly desktop
   - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
   - Nightly runs are always GitHub prereleases and never marked latest.
   - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
-- Includes Tauri auto-update metadata (`latest.json` or `nightly.json`) and updater signatures in release assets.
+- Requires Tauri updater signing secrets and includes auto-update metadata (`latest.json` or
+  `nightly.json`) plus updater signatures in release assets.
 - Publishes a fixed `nightly` GitHub Release/tag for the nightly updater feed, while stable uses GitHub's latest-release URL.
+- Verifies the published GitHub Release assets before the workflow can finalize. Missing Windows,
+  Linux, macOS, updater manifest, signature assets, or updater manifest platform entries fail the
+  release job.
+- Verifies the assembled `release-assets` directory before publishing, so missing matrix artifacts
+  fail before the workflow creates or updates a GitHub Release.
 - Optionally publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file when repository variable `T3CODE_PUBLISH_NPM` is set to `true`:
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
-- Signing is optional and auto-detected per platform from secrets.
+- Platform code signing is optional and auto-detected per platform from secrets. Tauri updater
+  signing is required for both stable and nightly releases.
 
 ## Nightly builds
 
@@ -35,8 +44,10 @@ This document covers the unified release workflow for stable and nightly desktop
   - scheduled every 3 hours
   - manual `workflow_dispatch` with `channel=nightly`
 - Runs the same desktop quality gates and artifact matrix as the tagged release flow.
+- Scheduled nightlies are skipped when `main` has no changes since the latest nightly tag; manual
+  nightly dispatches always build.
 - Publishes a GitHub prerelease only:
-  - tag format: `nightly-vX.Y.Z-nightly.YYYYMMDD.<run_number>`
+  - tag format: `vX.Y.Z-nightly.YYYYMMDD.<run_number>`
   - release name includes the short commit SHA
   - `make_latest` is always `false`
 - Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
@@ -61,6 +72,10 @@ This document covers the unified release workflow for stable and nightly desktop
 - Public key source:
   - `T3CODE_TAURI_UPDATER_PUBKEY`, if set.
   - otherwise `T3CODE_DESKTOP_UPDATER_PUBKEY`, `TAURI_UPDATER_PUBKEY`, or `TAURI_SIGNING_PUBLIC_KEY`.
+- Release workflow updater signing secrets:
+  - `TAURI_SIGNING_PRIVATE_KEY`
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, if the private key is password-protected
+  - `TAURI_SIGNING_PUBLIC_KEY`
 - Required release assets for updater:
   - platform installers (`.exe`, `.dmg`, `.AppImage`)
   - updater signatures (`*.sig`)
@@ -90,11 +105,12 @@ Checklist:
    - run `npm publish --access public --tag latest`
 6. Nightly runs from the same workflow file publish with `npm publish --access public --tag nightly`.
 
-## 1) Dry-run release without signing
+## 1) Dry-run release without platform code signing
 
 Use this first to validate the release pipeline.
 
-1. Confirm no signing secrets are required for this test.
+1. Confirm Tauri updater signing secrets are configured. Platform code-signing secrets can be
+   omitted for this test.
 2. Create a test tag:
    - `git tag v0.0.0-test.1`
    - `git push origin v0.0.0-test.1`
@@ -167,8 +183,12 @@ Checklist:
 5. Verify workflow steps:
    - preflight passes
    - all matrix builds pass
+   - assembled release asset verification passes before publish
    - release job uploads expected files
-6. Smoke test downloaded artifacts.
+6. Run `bun run release:verify-github -- --channel all` to verify the latest stable release and
+   fixed nightly channel contain Windows, Linux, macOS, updater manifest entries, and signature
+   assets.
+7. Smoke test downloaded artifacts.
 
 ## 5) Troubleshooting
 
@@ -176,6 +196,33 @@ Checklist:
   - Check all Apple secrets are populated and non-empty.
 - Windows build unsigned when expected signed:
   - Check all Azure ATS and auth secrets are populated and non-empty.
-- Build fails with signing error:
+- Build fails with updater signing configuration error:
+  - Ensure `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PUBLIC_KEY` are configured.
+- Build fails with platform code-signing error:
   - Retry with secrets removed to confirm unsigned path still works.
   - Re-check certificate/profile names and tenant/client credentials.
+- `bun run release:verify-github -- --channel all` reports a partial stable release:
+  - Re-run the stable workflow after these release checks are merged; release uploads use
+    `overwrite_files: true` so a repaired run can replace partial assets.
+  - If the failed tag should not be reused, cut a new `vX.Y.Z` stable tag and verify again.
+
+## 6) Recovering a partial stable release
+
+Use this when the latest stable GitHub Release exists but is missing platform assets, updater
+signatures, or `latest.json`.
+
+1. Merge the release hardening changes first:
+   - `.github/workflows/release.yml`
+   - `scripts/verify-github-release-assets.ts`
+   - `scripts/verify-github-release-assets.test.ts`
+   - `scripts/release-smoke.ts`
+   - `package.json`
+2. Confirm repository secrets include `TAURI_SIGNING_PRIVATE_KEY` and
+   `TAURI_SIGNING_PUBLIC_KEY`.
+3. Re-run the stable workflow for the broken version, or cut a new stable tag:
+   - existing version: `workflow_dispatch` with `channel=stable` and `version=X.Y.Z`
+   - new version: push a new `vX.Y.Z` tag
+4. Wait for preflight, the four desktop matrix builds, assembled asset verification, publish, and
+   published asset verification to pass.
+5. Run `bun run release:verify-github -- --channel all` locally. The goal is not recovered until
+   stable and nightly both report `OK`.
