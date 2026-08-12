@@ -204,6 +204,9 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
+  ...(instance.snapshot.subscribeChanges === undefined
+    ? {}
+    : { subscribeChanges: instance.snapshot.subscribeChanges }),
 });
 
 export const ProviderRegistryLive = Layer.effect(
@@ -569,9 +572,13 @@ export const ProviderRegistryLive = Layer.effect(
         // the current read or the active subscriber observes the result.
         for (const [, instance] of newlyAdded) {
           const source = buildSnapshotSource(instance);
-          yield* Stream.runForEach(source.streamChanges, (provider) =>
+          const sourceChanges =
+            source.subscribeChanges === undefined
+              ? source.streamChanges
+              : yield* source.subscribeChanges;
+          yield* Stream.runForEach(sourceChanges, (provider) =>
             correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
-          ).pipe(Effect.forkScoped);
+          ).pipe(Effect.forkScoped({ startImmediately: true }));
         }
         yield* Effect.yieldNow;
 
@@ -690,7 +697,7 @@ export const ProviderRegistryLive = Layer.effect(
     yield* Stream.runForEach(
       Stream.fromSubscription(instanceChanges),
       () => syncLiveSourcesAndContinue,
-    ).pipe(Effect.forkScoped);
+    ).pipe(Effect.forkScoped({ startImmediately: true }));
 
     const recoverRefreshFailure = Effect.fn("recoverRefreshFailure")(function* (
       cause: Cause.Cause<unknown>,

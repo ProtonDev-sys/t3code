@@ -6,8 +6,11 @@
  *
  * @module ProjectFaviconResolver
  */
+import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -62,6 +65,8 @@ const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
 const ICON_REL_RE = /\brel\s*:\s*["'](?:icon|shortcut icon)["']/i;
 const ICON_HREF_RE = /\bhref\s*:\s*["']([^"'?]+)/i;
+const FAVICON_RESOLUTION_CACHE_CAPACITY = 1_024;
+const FAVICON_RESOLUTION_CACHE_TTL = Duration.minutes(5);
 
 export class ProjectFaviconResolutionError extends Schema.TaggedErrorClass<ProjectFaviconResolutionError>()(
   "ProjectFaviconResolutionError",
@@ -175,9 +180,10 @@ export const make = Effect.gen(function* () {
     return null;
   });
 
-  const resolvePath: ProjectFaviconResolver["Service"]["resolvePath"] = Effect.fn(
-    "ProjectFaviconResolver.resolvePath",
-  )(function* (cwd, faviconPath) {
+  const resolvePathUncached = Effect.fn("ProjectFaviconResolver.resolvePathUncached")(function* (
+    cwd: string,
+    faviconPath?: string,
+  ): Effect.fn.Return<string | null, ProjectFaviconResolutionError> {
     const projectCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd).pipe(
       Effect.mapError(
         (cause) =>
@@ -259,6 +265,28 @@ export const make = Effect.gen(function* () {
 
     return null;
   });
+
+  const resolutionCache = yield* Cache.makeWith<
+    string,
+    string | null,
+    ProjectFaviconResolutionError
+  >(
+    (key) => {
+      const [cwd, faviconPath] = JSON.parse(key) as readonly [string, string | null];
+      return resolvePathUncached(cwd, faviconPath ?? undefined);
+    },
+    {
+      capacity: FAVICON_RESOLUTION_CACHE_CAPACITY,
+      timeToLive: Exit.match({
+        onSuccess: () => FAVICON_RESOLUTION_CACHE_TTL,
+        onFailure: () => Duration.zero,
+      }),
+    },
+  );
+
+  const resolvePath: ProjectFaviconResolver["Service"]["resolvePath"] = Effect.fn(
+    "ProjectFaviconResolver.resolvePath",
+  )((cwd, faviconPath) => Cache.get(resolutionCache, JSON.stringify([cwd, faviconPath ?? null])));
 
   return ProjectFaviconResolver.of({ resolvePath });
 });

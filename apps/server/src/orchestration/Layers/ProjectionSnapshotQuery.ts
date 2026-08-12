@@ -350,7 +350,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
-  const repositoryIdentityResolutionConcurrency = 4;
+  // A cold shell snapshot may contain hundreds of workspaces. Git process
+  // startup is comparatively expensive on Windows, so a four-wide queue can
+  // hold the initial WebSocket subscription open for tens of seconds. Keep the
+  // fan-out bounded while allowing enough parallelism to finish before the
+  // client's slow-request threshold.
+  const repositoryIdentityResolutionConcurrency = 16;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
     "ProjectionSnapshotQuery.resolveRepositoryIdentitiesForProjects",
   )(function* (

@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { TestClock } from "effect/testing";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
@@ -35,6 +36,47 @@ const makeRepositoryIdentityResolverTestLayer = (options: {
   ).pipe(Layer.provide(ProcessRunner.layer));
 
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
+  it.effect("coalesces concurrent reconnect lookups without respawning Git", () =>
+    Effect.gen(function* () {
+      const invocations: string[] = [];
+      const processRunner = ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            invocations.push(input.args.join(" "));
+            const isTopLevelLookup = input.args.includes("rev-parse");
+            return {
+              stdout: isTopLevelLookup
+                ? "C:/repo\n"
+                : "origin\thttps://github.com/T3Tools/t3code.git (fetch)\n",
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      });
+      const resolver = yield* RepositoryIdentityResolver.make({ cacheCapacity: 16 }).pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+      );
+
+      const identities = yield* Effect.all(
+        Array.from({ length: 100 }, () => resolver.resolve("C:\\repo")),
+        { concurrency: "unbounded" },
+      );
+      const repeated = yield* resolver.resolve("C:\\repo");
+
+      expect(
+        identities.every((identity) => identity?.canonicalKey === "github.com/t3tools/t3code"),
+      ).toBe(true);
+      expect(repeated?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(invocations.filter((invocation) => invocation.includes("rev-parse"))).toHaveLength(1);
+      expect(invocations.filter((invocation) => invocation.includes("remote -v"))).toHaveLength(1);
+    }),
+  );
+
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

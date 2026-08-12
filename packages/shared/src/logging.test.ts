@@ -71,13 +71,15 @@ describe("RotatingFileSink", () => {
 
   it("only treats a missing log file as an empty current size", () => {
     const directory = makeTempDirectory();
-    const filePath = NodePath.join(directory, "a".repeat(300));
+    const filePath = NodePath.join(directory, "invalid\0path");
 
     const thrown = captureError(() => new RotatingFileSink({ filePath, maxBytes: 1, maxFiles: 1 }));
 
     expect(thrown).toBeInstanceOf(RotatingFileSinkError);
     expect(thrown).toMatchObject({ operation: "read", filePath });
-    expect((thrown as RotatingFileSinkError).cause).toMatchObject({ code: "ENAMETOOLONG" });
+    expect((thrown as RotatingFileSinkError).cause).toMatchObject({
+      code: "ERR_INVALID_ARG_VALUE",
+    });
   });
 
   it("starts an absent log file at zero bytes", () => {
@@ -102,6 +104,45 @@ describe("RotatingFileSink", () => {
     });
 
     const thrown = captureError(() => sink.write("entry"));
+
+    expect(thrown).toBeInstanceOf(RotatingFileSinkError);
+    expect(thrown).toMatchObject({ operation: "write", filePath });
+    expect((thrown as RotatingFileSinkError).cause).toMatchObject({ code: "EISDIR" });
+  });
+
+  it("serializes concurrent asynchronous writes and rotation", async () => {
+    const directory = makeTempDirectory();
+    const filePath = NodePath.join(directory, "log.ndjson");
+    const sink = new RotatingFileSink({
+      filePath,
+      maxBytes: 6,
+      maxFiles: 2,
+      throwOnError: true,
+    });
+
+    await Promise.all([
+      sink.writeAsync("aa"),
+      sink.writeAsync("bb"),
+      sink.writeAsync("cccc"),
+      sink.writeAsync("dd"),
+    ]);
+
+    expect(NodeFS.readFileSync(filePath, "utf8")).toBe("ccccdd");
+    expect(NodeFS.readFileSync(`${filePath}.1`, "utf8")).toBe("aabb");
+  });
+
+  it("preserves asynchronous write failures", async () => {
+    const directory = makeTempDirectory();
+    const filePath = NodePath.join(directory, "log.ndjson");
+    NodeFS.mkdirSync(filePath);
+    const sink = new RotatingFileSink({
+      filePath,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      maxFiles: 1,
+      throwOnError: true,
+    });
+
+    const thrown = await sink.writeAsync("entry").catch((cause: unknown) => cause);
 
     expect(thrown).toBeInstanceOf(RotatingFileSinkError);
     expect(thrown).toMatchObject({ operation: "write", filePath });

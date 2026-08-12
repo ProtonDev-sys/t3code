@@ -349,8 +349,10 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     count: 0,
     durationMs: 0,
   };
+  let flushQueue: Promise<void> = Promise.resolve();
+  let thresholdFlushScheduled = false;
 
-  const flushUnsafe = () => {
+  const flushUnsafe = async () => {
     if (buffer.length === 0) {
       return;
     }
@@ -378,9 +380,11 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
       const chunk = records.slice(persistedCount, nextIndex).join("");
       const startedAt = performance.now();
       try {
-        sink.write(chunk);
+        await sink.writeAsync(chunk);
       } catch {
-        buffer.unshift(...records.slice(persistedCount));
+        // Keep failed records ahead of anything pushed while the asynchronous
+        // write was in flight so retry order remains stable.
+        buffer = [...records.slice(persistedCount), ...buffer];
         return;
       }
       pendingFlushStats = {
@@ -392,16 +396,40 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     }
   };
 
-  const flush = Effect.sync(() => {
-    flushUnsafe();
-    const stats = pendingFlushStats;
-    pendingFlushStats = {
-      logicalWriteBytes: 0,
-      count: 0,
-      durationMs: 0,
-    };
-    return stats;
-  }).pipe(
+  const enqueueThresholdFlush = (): void => {
+    if (thresholdFlushScheduled) return;
+    thresholdFlushScheduled = true;
+    const queued = flushQueue.then(async () => {
+      try {
+        await flushUnsafe();
+      } finally {
+        thresholdFlushScheduled = false;
+      }
+    });
+    // `flushUnsafe` handles persistence failures by restoring records. Keep a
+    // defensive rejection handler here so one defect cannot poison the queue.
+    flushQueue = queued.catch(() => undefined);
+  };
+
+  const flushAndTakeStats = (): Promise<TraceSinkFlushStats> => {
+    const queued = flushQueue.then(async () => {
+      await flushUnsafe();
+      const stats = pendingFlushStats;
+      pendingFlushStats = {
+        logicalWriteBytes: 0,
+        count: 0,
+        durationMs: 0,
+      };
+      return stats;
+    });
+    flushQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  };
+
+  const flush = Effect.promise(flushAndTakeStats).pipe(
     Effect.flatMap((stats) =>
       stats.count > 0 && options.onFlush ? options.onFlush(stats).pipe(Effect.ignore) : Effect.void,
     ),
@@ -419,7 +447,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
       try {
         buffer.push(`${JSON.stringify(record)}\n`);
         if (buffer.length >= FLUSH_BUFFER_THRESHOLD) {
-          flushUnsafe();
+          enqueueThresholdFlush();
         }
       } catch {
         return;

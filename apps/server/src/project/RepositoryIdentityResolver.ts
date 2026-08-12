@@ -12,9 +12,9 @@ import * as Layer from "effect/Layer";
 
 import * as ProcessRunner from "../processRunner.ts";
 
-const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
-const DEFAULT_POSITIVE_CACHE_TTL = Duration.minutes(1);
-const DEFAULT_NEGATIVE_CACHE_TTL = Duration.minutes(1);
+const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 1_024;
+const DEFAULT_POSITIVE_CACHE_TTL = Duration.minutes(30);
+const DEFAULT_NEGATIVE_CACHE_TTL = Duration.minutes(5);
 
 export interface RepositoryIdentityResolverOptions {
   readonly cacheCapacity?: number;
@@ -139,6 +139,13 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   options: RepositoryIdentityResolverOptions = {},
 ) {
   const processRunner = yield* ProcessRunner.ProcessRunner;
+  const timeToLive = Exit.match<RepositoryIdentity | null, never, Duration.Input, Duration.Input>({
+    onSuccess: (value) =>
+      value === null
+        ? (options.negativeCacheTtl ?? DEFAULT_NEGATIVE_CACHE_TTL)
+        : (options.positiveCacheTtl ?? DEFAULT_POSITIVE_CACHE_TTL),
+    onFailure: () => Duration.zero,
+  });
 
   const repositoryIdentityCache = yield* Cache.makeWith<string, RepositoryIdentity | null>(
     (cacheKey) =>
@@ -147,24 +154,28 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
       ),
     {
       capacity: options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY,
-      timeToLive: Exit.match({
-        onSuccess: (value) =>
-          value === null
-            ? (options.negativeCacheTtl ?? DEFAULT_NEGATIVE_CACHE_TTL)
-            : (options.positiveCacheTtl ?? DEFAULT_POSITIVE_CACHE_TTL),
-        onFailure: () => Duration.zero,
-      }),
+      timeToLive,
+    },
+  );
+
+  // Resolving the cache key itself launches `git rev-parse`. Cache the full
+  // cwd lookup as well as the root-keyed remote lookup so every reconnect does
+  // not respawn Git once per visible project (especially costly on Windows).
+  const repositoryIdentityByCwdCache = yield* Cache.makeWith<string, RepositoryIdentity | null>(
+    (cwd) =>
+      resolveRepositoryIdentityCacheKey(cwd).pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+        Effect.flatMap((cacheKey) => Cache.get(repositoryIdentityCache, cacheKey)),
+      ),
+    {
+      capacity: options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY,
+      timeToLive,
     },
   );
 
   const resolve: RepositoryIdentityResolver["Service"]["resolve"] = Effect.fn(
     "RepositoryIdentityResolver.resolve",
-  )(function* (cwd) {
-    const cacheKey = yield* resolveRepositoryIdentityCacheKey(cwd).pipe(
-      Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
-    );
-    return yield* Cache.get(repositoryIdentityCache, cacheKey);
-  });
+  )((cwd) => Cache.get(repositoryIdentityByCwdCache, cwd));
 
   return RepositoryIdentityResolver.of({ resolve });
 });

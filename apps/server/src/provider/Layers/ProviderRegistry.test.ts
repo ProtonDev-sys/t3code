@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -68,6 +69,7 @@ process.env.T3CODE_CURSOR_ENABLED = "1";
 
 const encoder = new TextEncoder();
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
+const yieldToHostScheduler = TestClock.withLive(Effect.sleep("10 millis"));
 
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
@@ -1010,6 +1012,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(refreshedProvider),
               streamChanges: Stream.fromPubSub(changes),
+              subscribeChanges: PubSub.subscribe(changes).pipe(
+                Effect.map((subscription) => Stream.fromSubscription(subscription)),
+              ),
             },
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1062,7 +1067,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               attempt += 1
             ) {
               yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
+              yield* yieldToHostScheduler;
               cachedProvider = yield* readProviderStatusCache(filePath);
             }
 
@@ -1139,6 +1144,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 getSnapshot: Effect.succeed(initialProvider),
                 refresh: Effect.succeed(authoritativeProvider),
                 streamChanges: Stream.fromPubSub(changes),
+                subscribeChanges: PubSub.subscribe(changes).pipe(
+                  Effect.map((subscription) => Stream.fromSubscription(subscription)),
+                ),
               },
               adapter: {} as ProviderInstance["adapter"],
               textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1187,7 +1195,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 attempt += 1
               ) {
                 yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
+                yield* yieldToHostScheduler;
                 cachedProvider = yield* readProviderStatusCache(filePath);
               }
 
@@ -1200,7 +1208,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 attempt += 1
               ) {
                 yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
+                yield* yieldToHostScheduler;
                 cachedProvider = yield* readProviderStatusCache(filePath);
               }
 
@@ -1606,7 +1614,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               attempts += 1
             ) {
               yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
+              yield* yieldToHostScheduler;
               initialProviders = yield* registry.getProviders;
             }
             const initialCodex = initialProviders.find(
@@ -1645,7 +1653,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   return providers;
                 }
                 yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
+                yield* yieldToHostScheduler;
               }
               return yield* registry.getProviders;
             });
@@ -2184,6 +2192,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
 
         return Effect.gen(function* () {
+          const path = yield* Path.Path;
           const status = yield* checkClaudeProviderStatus(
             {
               ...defaultClaudeSettings,
@@ -2194,7 +2203,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
-            [claudeConfigDir],
+            [path.resolve(claudeConfigDir)],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
